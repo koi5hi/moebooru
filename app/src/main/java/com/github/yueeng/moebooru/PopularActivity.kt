@@ -1,7 +1,12 @@
 package com.github.yueeng.moebooru
 
 import android.os.Bundle
-import android.view.*
+import android.view.LayoutInflater
+import android.view.Menu
+import android.view.MenuInflater
+import android.view.MenuItem
+import android.view.View
+import android.view.ViewGroup
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.os.bundleOf
 import androidx.core.view.MenuProvider
@@ -21,7 +26,9 @@ import com.github.yueeng.moebooru.databinding.PopularTabItemBinding
 import com.google.android.material.datepicker.CalendarConstraints
 import com.google.android.material.datepicker.MaterialDatePicker
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 class PopularActivity : MoeActivity(R.layout.activity_container) {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -102,7 +109,7 @@ class PopularFragment : Fragment(), SavedFragment.Queryable, MenuProvider {
         "week" -> calendar().minus(target).weeksGreedy - 1
         "month" -> calendar().minus(target).months - 1
         "year" -> calendar().minus(target).year - 1
-        else -> throw  IllegalArgumentException()
+        else -> throw IllegalArgumentException()
     }
 
     fun pos2date(position: Int) = when (type) {
@@ -110,7 +117,7 @@ class PopularFragment : Fragment(), SavedFragment.Queryable, MenuProvider {
         "week" -> calendar().weekOfYear(-position, true)
         "month" -> calendar().month(-position, true)
         "year" -> calendar().year(-position, true)
-        else -> throw  IllegalArgumentException()
+        else -> throw IllegalArgumentException()
     }
 
     inner class PopularAdapter(fm: Fragment) : FragmentStateAdapter(fm) {
@@ -130,6 +137,7 @@ class PopularFragment : Fragment(), SavedFragment.Queryable, MenuProvider {
             "week" -> pos2date(position).let {
                 "${it.lastDayOfWeekWithLocale.format(monthFormatter)} W${it.lastDayOfWeekWithLocale.get(Calendar.WEEK_OF_MONTH)}"
             }
+
             "month" -> pos2date(position).firstDayOfMonth.format(monthFormatter)
             "year" -> pos2date(position).format(yearFormatter)
             else -> throw IllegalArgumentException()
@@ -173,6 +181,7 @@ class PopularFragment : Fragment(), SavedFragment.Queryable, MenuProvider {
         R.id.column -> true.also {
             MoeSettings.column()
         }
+
         else -> false
     }
 

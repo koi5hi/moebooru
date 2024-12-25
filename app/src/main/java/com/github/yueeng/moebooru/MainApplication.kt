@@ -3,6 +3,8 @@ package com.github.yueeng.moebooru
 import android.app.Activity
 import android.app.ActivityOptions
 import android.app.Application
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -10,6 +12,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.Spannable
@@ -19,12 +22,17 @@ import android.transition.Explode
 import android.transition.Fade
 import android.transition.Slide
 import android.transition.TransitionSet
-import android.view.*
+import android.view.Gravity
+import android.view.Menu
+import android.view.MenuItem
+import android.view.View
+import android.view.Window
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.PermissionChecker
 import androidx.core.content.res.use
 import androidx.core.view.GravityCompat
@@ -34,9 +42,14 @@ import androidx.fragment.app.FragmentActivity
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.commitNow
 import androidx.lifecycle.asFlow
-import androidx.lifecycle.lifecycleScope
 import com.google.android.material.snackbar.Snackbar
-import com.google.android.material.transition.platform.*
+import com.google.android.material.transition.platform.MaterialArcMotion
+import com.google.android.material.transition.platform.MaterialContainerTransform
+import com.google.android.material.transition.platform.MaterialContainerTransformSharedElementCallback
+import com.google.android.material.transition.platform.MaterialElevationScale
+import com.google.android.material.transition.platform.MaterialFadeThrough
+import com.google.android.material.transition.platform.MaterialSharedAxis
+import com.google.gson.GsonBuilder
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 import java.io.PrintWriter
@@ -62,6 +75,11 @@ class MainApplication : Application(), Thread.UncaughtExceptionHandler {
     override fun onCreate() {
         super.onCreate()
         AppCompatDelegate.setDefaultNightMode(MoeSettings.daynight.value ?: AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = NotificationManagerCompat.from(this)
+            val channel = NotificationChannel(moeHost, getString(R.string.app_channel_download), NotificationManager.IMPORTANCE_DEFAULT)
+            manager.createNotificationChannel(channel)
+        }
     }
 
     override fun uncaughtException(t: Thread, e: Throwable) {
@@ -78,20 +96,26 @@ class CrashActivity : AppCompatActivity(R.layout.activity_crash) {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setSupportActionBar(findViewById(R.id.toolbar))
-        val e = intent.getSerializableExtra("e") as Throwable
+        val e = runCatching { intent.getSerializableExtraCompat("e") as? Throwable }.getOrNull()
         val seq = generateSequence(e) { it.cause }
+        if (!seq.any()) supportActionBar?.title = "Info"
         val ex = StringWriter().use { stream ->
             PrintWriter(stream).use { writer ->
-                writer.println("=====BuildConfig=====")
-                BuildConfig::class.java.declaredFields.filter { Modifier.isStatic(it.modifiers) }.forEach {
-                    writer.println("${it.name}: ${it.get(null)}")
+                val gson = GsonBuilder().create()
+                val info = listOf(BuildConfig::class, Build::class, Build.VERSION::class)
+                info.forEach { i ->
+                    writer.println("===== ${i.simpleName} =====")
+                    i.java.declaredFields.filter { Modifier.isStatic(it.modifiers) }.forEach {
+                        runCatching { it.isAccessible = true }
+                        val value = runCatching { it.get(null) }.getOrElse { t -> t.message }
+                        writer.println("${it.name}: ${gson.toJson(value)}")
+                    }
+                    writer.println()
                 }
-                writer.println()
-                writer.println("=====Exception=====")
-                seq.forEach {
-                    it.printStackTrace(writer)
+                if (seq.any()) {
+                    writer.println("===== Exception =====")
+                    seq.forEach { it.printStackTrace(writer) }
                 }
-                writer.println("-------------------")
             }
             stream.toString()
         }
@@ -115,12 +139,9 @@ class CrashActivity : AppCompatActivity(R.layout.activity_crash) {
             val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             manager.setPrimaryClip(ClipData.newPlainText("ERROR", findViewById<TextView>(R.id.text1).text))
         }
+
         else -> super.onOptionsItemSelected(item)
     }
-}
-
-interface IOnBackPressed {
-    fun onBackPressed() = false
 }
 
 open class MoeActivity(contentLayoutId: Int) : AppCompatActivity(contentLayoutId) {
@@ -140,7 +161,7 @@ open class MoeActivity(contentLayoutId: Int) : AppCompatActivity(contentLayoutId
                 findViewById<View>(android.R.id.content).transitionName = "shared_element_container"
                 setEnterSharedElementCallback(MaterialContainerTransformSharedElementCallback())
                 setExitSharedElementCallback(MaterialContainerTransformSharedElementCallback())
-                val background = theme.obtainStyledAttributes(intArrayOf(R.attr.colorSurface)).use {
+                val background = theme.obtainStyledAttributes(intArrayOf(com.google.android.material.R.attr.colorSurface)).use {
                     it.getColor(0, Color.WHITE)
                 }
                 window.sharedElementEnterTransition = MaterialContainerTransform().apply {
@@ -159,6 +180,7 @@ open class MoeActivity(contentLayoutId: Int) : AppCompatActivity(contentLayoutId
                 }
                 window.allowEnterTransitionOverlap = true
             }
+
             "scale" -> {
                 window.requestFeature(Window.FEATURE_ACTIVITY_TRANSITIONS)
                 val growingUp = MaterialElevationScale(true)
@@ -168,6 +190,7 @@ open class MoeActivity(contentLayoutId: Int) : AppCompatActivity(contentLayoutId
                 window.reenterTransition = growingUp
                 window.returnTransition = growingDown
             }
+
             "fade" -> {
                 window.requestFeature(Window.FEATURE_ACTIVITY_TRANSITIONS)
                 val fade = MaterialFadeThrough()
@@ -176,6 +199,7 @@ open class MoeActivity(contentLayoutId: Int) : AppCompatActivity(contentLayoutId
                 window.reenterTransition = fade
                 window.returnTransition = fade
             }
+
             "axis_x" -> {
                 window.requestFeature(Window.FEATURE_ACTIVITY_TRANSITIONS)
                 val forward = MaterialSharedAxis(MaterialSharedAxis.X, true)
@@ -185,6 +209,7 @@ open class MoeActivity(contentLayoutId: Int) : AppCompatActivity(contentLayoutId
                 window.enterTransition = forward
                 window.returnTransition = backward
             }
+
             "axis_y" -> {
                 window.requestFeature(Window.FEATURE_ACTIVITY_TRANSITIONS)
                 val forward = MaterialSharedAxis(MaterialSharedAxis.Y, true)
@@ -194,6 +219,7 @@ open class MoeActivity(contentLayoutId: Int) : AppCompatActivity(contentLayoutId
                 window.enterTransition = forward
                 window.returnTransition = backward
             }
+
             "axis_z" -> {
                 window.requestFeature(Window.FEATURE_ACTIVITY_TRANSITIONS)
                 val forward = MaterialSharedAxis(MaterialSharedAxis.Z, true)
@@ -203,6 +229,7 @@ open class MoeActivity(contentLayoutId: Int) : AppCompatActivity(contentLayoutId
                 window.enterTransition = forward
                 window.returnTransition = backward
             }
+
             "explode" -> {
                 window.requestFeature(Window.FEATURE_ACTIVITY_TRANSITIONS)
                 val explodeFade = TransitionSet().addTransition(Explode()).addTransition(Fade())
@@ -211,6 +238,7 @@ open class MoeActivity(contentLayoutId: Int) : AppCompatActivity(contentLayoutId
                 window.returnTransition = explodeFade
                 window.reenterTransition = explodeFade
             }
+
             "slide" -> {
                 window.requestFeature(Window.FEATURE_ACTIVITY_TRANSITIONS)
                 val start = TransitionSet().addTransition(Slide(Gravity.START)).addTransition(Fade())
@@ -220,6 +248,7 @@ open class MoeActivity(contentLayoutId: Int) : AppCompatActivity(contentLayoutId
                 window.returnTransition = end
                 window.reenterTransition = start
             }
+
             else -> Unit
         }
 //        window.allowEnterTransitionOverlap = false
@@ -229,10 +258,18 @@ open class MoeActivity(contentLayoutId: Int) : AppCompatActivity(contentLayoutId
     override fun onCreate(savedInstanceState: Bundle?) {
         ensureTransform()
         super.onCreate(savedInstanceState)
-        lifecycleScope.launchWhenCreated {
+        launchWhenCreated {
             MoeSettings.recreate.asFlow().drop(1).collectLatest {
                 recreate()
             }
+        }
+        this.addOnBackPressedCallback {
+            val drawer = findViewById<DrawerLayout>(R.id.drawer)
+            if (drawer?.isDrawerOpen(GravityCompat.START) == true || drawer?.isDrawerOpen(GravityCompat.END) == true) {
+                drawer.closeDrawers()
+                return@addOnBackPressedCallback true
+            }
+            false
         }
     }
 
@@ -246,24 +283,14 @@ open class MoeActivity(contentLayoutId: Int) : AppCompatActivity(contentLayoutId
             val options = findViewById<View>(item.itemId)?.let { ActivityOptions.makeSceneTransitionAnimation(this, it, "shared_element_container") }
             startActivity(Intent(this, SettingsActivity::class.java), options?.toBundle())
         }
+
         R.id.search -> true.also {
             val query = (supportFragmentManager.findFragmentById(R.id.container) as? SavedFragment.Queryable)?.query() ?: Q()
             val options = findViewById<View>(item.itemId)?.let { ActivityOptions.makeSceneTransitionAnimation(this, it, "shared_element_container") }
             startActivity(Intent(this, QueryActivity::class.java).putExtra("query", query), options?.toBundle())
         }
-        else -> super.onOptionsItemSelected(item)
-    }
 
-    override fun onBackPressed() {
-        val drawer = findViewById<DrawerLayout>(R.id.drawer)
-        if (drawer?.isDrawerOpen(GravityCompat.START) == true || drawer?.isDrawerOpen(GravityCompat.END) == true) {
-            drawer.closeDrawers()
-            return
-        }
-        if (supportFragmentManager.fragments.mapNotNull { it as? IOnBackPressed }.firstOrNull()?.onBackPressed() == true) {
-            return
-        }
-        super.onBackPressed()
+        else -> super.onOptionsItemSelected(item)
     }
 }
 

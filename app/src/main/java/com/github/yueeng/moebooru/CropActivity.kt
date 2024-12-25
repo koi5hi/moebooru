@@ -1,27 +1,28 @@
 package com.github.yueeng.moebooru
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
+import android.Manifest
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.drawable.Drawable
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
+import com.bumptech.glide.Glide
 import com.bumptech.glide.load.engine.DiskCacheStrategy
 import com.bumptech.glide.request.target.CustomTarget
 import com.bumptech.glide.request.transition.Transition
 import com.yalantis.ucrop.UCrop
 import com.yalantis.ucrop.UCropActivity
 import java.io.File
-import java.util.*
+import java.util.UUID
 
 class CropActivity : AppCompatActivity() {
     companion object {
@@ -32,7 +33,7 @@ class CropActivity : AppCompatActivity() {
     private val op: Int by lazy { intent.getIntExtra("op", 0) }
     private val id: Int by lazy { intent.getIntExtra("id", 0) }
     private val name: String by lazy { intent.getStringExtra("name") ?: getString(R.string.app_name) }
-    private val source: Uri by lazy { intent.getParcelableExtra("source")!! }
+    private val source: Uri by lazy { intent.getParcelableExtraCompat("source")!! }
     private val cropShare = registerForActivityResult(CropImage()) { result ->
         try {
             if (result == null) return@registerForActivityResult
@@ -69,6 +70,7 @@ class CropActivity : AppCompatActivity() {
                 val dest = File(File(cacheDir, "shared").apply { mkdirs() }, name)
                 cropShare.launch(UCrop.of(source, Uri.fromFile(dest)))
             }
+
             OPTION_AVATAR -> {
                 val dest = File(cacheDir, UUID.randomUUID().toString())
                 val option = UCrop.Options().apply {
@@ -79,6 +81,7 @@ class CropActivity : AppCompatActivity() {
                     .withAspectRatio(1F, 1F).withOptions(option)
                 cropAvatar.launch(crop)
             }
+
             else -> finish()
         }
     }
@@ -87,25 +90,18 @@ class CropActivity : AppCompatActivity() {
         val extension = MimeTypeMap.getFileExtensionFromUrl(uri.toString())
         val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            type = mime ?: "image/$extension"
-            data = uri
+            setDataAndType(uri, mime ?: "image/$extension")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationManagerCompat.from(this).let { manager ->
-                val channel = NotificationChannel(moeHost, moeHost, NotificationManager.IMPORTANCE_DEFAULT)
-                manager.createNotificationChannel(channel)
-            }
-        }
         val builder = NotificationCompat.Builder(this, moeHost)
             .setContentTitle(title)
             .setContentText(content)
             .setAutoCancel(true)
             .setSmallIcon(R.drawable.ic_stat_name)
             .setContentIntent(PendingIntent.getActivity(this, id, Intent.createChooser(intent, getString(R.string.app_share)), PendingIntentCompat.FLAG_IMMUTABLE))
-        GlideApp.with(this).asBitmap().load(uri)
+        Glide.with(this).asBitmap().load(uri)
             .diskCacheStrategy(DiskCacheStrategy.NONE)
             .skipMemoryCache(true)
             .override(500, 500)
@@ -113,11 +109,16 @@ class CropActivity : AppCompatActivity() {
                 override fun onResourceReady(resource: Bitmap, transition: Transition<in Bitmap>?) {
                     builder.setStyle(NotificationCompat.BigPictureStyle().bigPicture(resource))
                         .setLargeIcon(resource)
-                    NotificationManagerCompat.from(this@CropActivity).notify(id, builder.build())
+                    if (ActivityCompat.checkSelfPermission(this@CropActivity, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+                        NotificationManagerCompat.from(this@CropActivity).notify(id, builder.build())
+                    }
                 }
 
-                override fun onLoadFailed(errorDrawable: Drawable?) =
-                    NotificationManagerCompat.from(this@CropActivity).notify(id, builder.build())
+                override fun onLoadFailed(errorDrawable: Drawable?) {
+                    if (ActivityCompat.checkSelfPermission(this@CropActivity, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+                        NotificationManagerCompat.from(this@CropActivity).notify(id, builder.build())
+                    }
+                }
 
                 override fun onLoadCleared(placeholder: Drawable?) = Unit
             })

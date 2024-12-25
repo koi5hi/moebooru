@@ -4,8 +4,8 @@
     <string name="app_cancel">取消</string>
     <string name="app_column">列</string>
     <string name="app_complete">成功</string>
-    <string name="app_download">%1$s 下载</string>
-    <string name="app_download_apk">下载</string>
+    <string name="app_downloaded">%1$s 下载</string>
+    <string name="app_download">下载</string>
     <string name="app_failed">失败</string>
     <string name="app_favorite">收藏</string>
     <string name="app_github">GitHub</string>
@@ -14,7 +14,7 @@
     <string name="app_artist">艺术家</string>
     <string name="app_page_jump">页码</string>
     <string name="app_page_number">%1$d/%2$d</string>
-    <string name="app_pre_release">预发布</string>
+    <string name="app_pre_release">其他版本</string>
     <string name="app_process_text_error">获取文字操作菜单出错: %1$s.</string>
     <string name="app_resolution">%1$dx%2$d[%3$s]</string>
     <string name="app_retry">重试</string>
@@ -24,16 +24,24 @@
     <string name="app_share">分享</string>
     <string name="app_similar">相似图像</string>
     <string name="app_update">检查更新</string>
+    <string name="app_update_error">检查更新失败</string>
+    <string name="app_update_ignore">忽略此版本</string>
     <string name="app_version">%1$s v%2$s.%3$s</string>
+    <string name="app_channel_download">下载通知</string>
+    <string name="app_channel_description">请打开应用通知设置，否则将看不到下载任务提示。</string>
+    <string name="app_channel_dismiss">不再提示</string>
+    <string name="app_channel_continue">继续下载</string>
 
     <string name="download_exists">已经下载过了，要重新下载吗？</string>
     <string name="download_ready">准备中</string>
-    <string name="download_running">已经在下载队列中，请等待</string>
+    <string name="download_started">开始下载，请等待。</string>
+    <string name="download_running">已经在下载队列中，请等待。</string>
 
     <string name="popular_by_day">按天排行</string>
     <string name="popular_by_month">按月排行</string>
     <string name="popular_by_week">按周排行</string>
     <string name="popular_by_year">按年排行</string>
+    <string name="popular_by_all">全部排行</string>
     <string name="popular_by_day_for">%1$s 按天排行</string>
     <string name="popular_by_month_for">%1$s 按月排行</string>
     <string name="popular_by_week_for">%1$s 按周排行</string>
@@ -89,6 +97,7 @@
     <string name="query_value_gt">大于</string>
     <string name="query_value_le">小于等于</string>
     <string name="query_value_lt">小于</string>
+    <string name="query_date_countdown">使用倒数时间</string>
     <string name="query_vote">投票</string>
     <string name="query_vote_desc">按指定用户评分搜索.</string>
     <string name="query_vote_star_1">1星</string>
@@ -143,8 +152,8 @@
     <string name="settings_list_page_off">显示</string>
     <string name="settings_list_page_on">禁用</string>
     <string name="settings_list_quality">列表加载时选择更清晰的图片</string>
-    <string name="settings_list_quality_off">预览图 (小、快)</string>
-    <string name="settings_list_quality_on">清晰图 (清晰、慢)</string>
+    <string name="settings_list_quality_off">预览图 (快)</string>
+    <string name="settings_list_quality_on">清晰图 (慢)</string>
     <string name="settings_preview_color">动态预览页背景颜色</string>
     <string name="settings_preview_color_off">默认</string>
     <string name="settings_preview_color_on">跟随图片色调</string>
@@ -152,6 +161,7 @@
     <string name="settings_safe_turn_off">安全</string>
     <string name="settings_safe_turn_on">全部</string>
 
+    <string name="user_avatar">头像</string>
     <string name="user_change_email">变更邮箱</string>
     <string name="user_change_pwd">变更密码</string>
     <string name="user_email">邮箱</string>

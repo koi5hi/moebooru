@@ -1,4 +1,4 @@
-@file:Suppress("EnumEntryName", "MemberVisibilityCanBePrivate", "unused", "FunctionName", "ObjectPropertyName", "LocalVariableName", "PropertyName")
+@file:Suppress("EnumEntryName", "MemberVisibilityCanBePrivate", "unused", "FunctionName", "LocalVariableName", "PropertyName")
 
 package com.github.yueeng.moebooru
 
@@ -27,6 +27,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonDeserializer
+import com.google.gson.Strictness
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.parcelize.Parcelize
@@ -72,7 +73,7 @@ enum class Resolution(val title: String, val resolution: Int) {
     val mpixels get() = resolution / 1000000F
 
     companion object {
-        fun match(mpixels: Float) = values().reversed().firstOrNull { mpixels >= it.mpixels } ?: ZERO
+        fun match(mpixels: Float) = entries.reversed().firstOrNull { mpixels >= it.mpixels } ?: ZERO
     }
 }
 
@@ -281,7 +282,7 @@ interface MoebooruService {
     @GET("post.json")
     suspend fun post(
         @Query("page") page: Int = 1,
-        @Query("tags") tags: Q = Q(),
+        @Query("tags") tags: String = "",
         @Query("limit") limit: Int = 20
     ): List<JImageItem>
 
@@ -437,16 +438,13 @@ data class Version(val ver: List<Int>) : Comparable<Version> {
     constructor(ver: String) : this(ver.trimStart('v', 'V').split('.').mapNotNull { it.toIntOrNull() })
 
     companion object {
-        fun from(ver: String?) = try {
-            ver?.let { Version(ver) }
-        } catch (_: Exception) {
-            null
-        }
+        fun from(ver: String?) = runCatching { ver?.let { Version(ver) } }.getOrNull()
     }
 }
 
 class Service(private val service: MoebooruService) : MoebooruService by service {
-    override suspend fun post(page: Int, tags: Q, limit: Int): List<JImageItem> = service.post(page, Q.safe(tags), limit)
+    suspend fun post(page: Int, tags: Q): List<JImageItem> = service.post(page, Q.safe(tags).toQuery())
+    suspend fun post(page: Int, tags: Q, limit: Int): List<JImageItem> = service.post(page, Q.safe(tags).toQuery(), limit)
     override suspend fun artist(name: String?): List<ItemArtist> {
         val artist = runCatching { service.artist(name) }
             .getOrNull()?.filter { it.name == name }?.takeIf { it.size == 1 } ?: return emptyList()
@@ -468,14 +466,14 @@ class Service(private val service: MoebooruService) : MoebooruService by service
                 0
             }
         }
-        private val gson = GsonBuilder().registerTypeAdapter(Int::class.java, intJsonDeserializer).setLenient().create()
+        private val gson = GsonBuilder().registerTypeAdapter(Int::class.java, intJsonDeserializer).setStrictness(Strictness.LENIENT).create()
         private val retrofit: Retrofit = Retrofit.Builder()
             .addConverterFactory(ScalarsConverterFactory.create())
             .addConverterFactory(GsonConverterFactory.create(gson))
             .client(okHttp)
             .baseUrl(moeUrl)
             .build()
-        val instance: MoebooruService = Service(retrofit.create(MoebooruService::class.java))
+        val instance: Service = Service(retrofit.create(MoebooruService::class.java))
 
         suspend fun csrf(): String? = try {
             val home = okHttp.newCall(Request.Builder().url("$moeUrl/user/home").build()).await { _, response -> response.body?.string() }
@@ -493,7 +491,12 @@ class Service(private val service: MoebooruService) : MoebooruService by service
     }
 }
 
-class Q(m: Map<String, Any>? = mapOf()) : Parcelable {
+
+interface IQ {
+    fun toQuery(): String
+}
+
+class Q(m: Map<String, Any>? = mapOf()) : Parcelable, IQ {
     val map: MutableMap<String, Any> = (m ?: emptyMap()).toMutableMap()
 
     @Parcelize
@@ -524,7 +527,22 @@ class Q(m: Map<String, Any>? = mapOf()) : Parcelable {
         override fun toString(): String = value
     }
 
-    data class Value<out T : Any>(val op: Op = Op.eq, val v1: T, val v2: T? = null, val ex: String? = null) : Parcelable {
+    @Parcelize
+    data class ValueDate(val cd: Int? = null, val date: Date? = null) : Parcelable, IQ {
+        override fun toQuery(): String = when {
+            cd != null -> calendar().day(-cd, true).format(formatter)
+            date != null -> formatter.format(date)
+            else -> throw IllegalArgumentException("cd and date are null")
+        }
+
+        override fun toString(): String = when {
+            cd != null -> "$cd"
+            date != null -> formatter.format(date)
+            else -> throw IllegalArgumentException("cd and date are null")
+        }
+    }
+
+    data class Value<out T : Any>(val op: Op = Op.eq, val v1: T, val v2: T? = null, val ex: String? = null) : Parcelable, IQ {
         enum class Op(val value: String) {
             eq("%s"),
             lt("<%s"),
@@ -534,29 +552,27 @@ class Q(m: Map<String, Any>? = mapOf()) : Parcelable {
             bt("%s..%s"),
         }
 
-        val v1string get() = (v1 as? Date)?.let { formatter.format(v1) } ?: "$v1"
+        val v1string: String get() = if (v1 is Date) formatter.format(v1) else "$v1"
 
-        val v2string get() = (v2 as? Date)?.let { formatter.format(v2) } ?: v2?.let { "$v2" } ?: ""
-
+        val v2string: String get() = if (v2 is Date) formatter.format(v2) else "${v2 ?: ""}"
+        override fun toQuery(): String = String.format(op.value, (v1 as? IQ)?.toQuery() ?: v1string, (v2 as? IQ)?.toQuery() ?: v2string) + (ex?.let { ":$ex" } ?: "")
         override fun toString(): String = String.format(op.value, v1string, v2string) + (ex?.let { ":$ex" } ?: "")
 
         constructor(op: Op, v: Pair<T, T?>, ex: String?) : this(op, v.first, v.second, ex)
 
         companion object {
-            fun <T : Any> from(source: String, fn: (String) -> T): Value<T> {
-                return source.split(":", limit = 2).let { sv ->
-                    val v = sv[0]
-                    val ex = sv.takeIf { it.size > 1 }?.let { it[1] }
-                    when {
-                        v.startsWith("..") -> Value(Op.le, v.substring(2).let(fn), ex = ex)
-                        v.endsWith("..") -> Value(Op.ge, v.substring(0, v.length - 2).let(fn), ex = ex)
-                        v.startsWith(">=") -> Value(Op.ge, v.substring(2).let(fn), ex = ex)
-                        v.startsWith("<=") -> Value(Op.le, v.substring(2).let(fn), ex = ex)
-                        v.startsWith(">") -> Value(Op.gt, v.substring(1).let(fn), ex = ex)
-                        v.startsWith("<") -> Value(Op.lt, v.substring(1).let(fn), ex = ex)
-                        v.contains("..") -> v.split("..").let { Value(Op.bt, it.first().let(fn), it.last().let(fn), ex = ex) }
-                        else -> Value(Op.eq, v.let(fn), ex = ex)
-                    }
+            fun <T : Any> from(source: String, fn: (String) -> T): Value<T> = source.split(":", limit = 2).let { sv ->
+                val v = sv[0]
+                val ex = sv.takeIf { it.size > 1 }?.let { it[1] }
+                when {
+                    v.startsWith("..") -> Value(Op.le, v.substring(2).let(fn), ex = ex)
+                    v.endsWith("..") -> Value(Op.ge, v.substring(0, v.length - 2).let(fn), ex = ex)
+                    v.startsWith(">=") -> Value(Op.ge, v.substring(2).let(fn), ex = ex)
+                    v.startsWith("<=") -> Value(Op.le, v.substring(2).let(fn), ex = ex)
+                    v.startsWith(">") -> Value(Op.gt, v.substring(1).let(fn), ex = ex)
+                    v.startsWith("<") -> Value(Op.lt, v.substring(1).let(fn), ex = ex)
+                    v.contains("..") -> v.split("..").let { Value(Op.bt, it.first().let(fn), it.last().let(fn), ex = ex) }
+                    else -> Value(Op.eq, v.let(fn), ex = ex)
                 }
             }
 
@@ -596,7 +612,7 @@ class Q(m: Map<String, Any>? = mapOf()) : Parcelable {
     val height: Value<Int>? by default
     val score: Value<Int>? by default
     val mpixels: Value<Float>? by default
-    val date: Value<Date>? by default
+    val date: Value<ValueDate>? by default
     val order: Order? by default
     val parent: String? by default
     val pool: String? by default
@@ -636,9 +652,11 @@ class Q(m: Map<String, Any>? = mapOf()) : Parcelable {
     fun mpixels(mpixels: Float, op: Value.Op = Value.Op.eq) = apply { map["mpixels"] = Value(op, mpixels) }
     fun mpixels(mpixels: Int, mpixels2: Float) = apply { map["mpixels"] = Value(Value.Op.bt, mpixels, mpixels2) }
 
-    fun date(date: Value<Date>) = apply { map["date"] = date }
-    fun date(date: Date, op: Value.Op = Value.Op.eq) = apply { map["date"] = Value(op, date) }
-    fun date(date: Date, date2: Date) = apply { map["date"] = Value(Value.Op.bt, date, date2) }
+    fun date(date: Value<ValueDate>) = apply { map["date"] = date }
+    fun date(date: Date, op: Value.Op = Value.Op.eq) = apply { map["date"] = Value(op, ValueDate(date = date)) }
+    fun date(date: Date, date2: Date) = apply { map["date"] = Value(Value.Op.bt, ValueDate(date = date), ValueDate(date = date2)) }
+    fun date(date: Int, op: Value.Op = Value.Op.eq) = apply { map["date"] = Value(op, ValueDate(date)) }
+    fun date(date: Int, date2: Int) = apply { map["date"] = Value(Value.Op.bt, ValueDate(date), ValueDate(date2)) }
 
     fun order(order: Order) = apply { map["order"] = order }
 
@@ -649,14 +667,10 @@ class Q(m: Map<String, Any>? = mapOf()) : Parcelable {
 
     fun keyword(keyword: String) = apply { map["keyword"] = keyword }
 
-    fun popular_by_day(date: Date) = order(Order.score).date(Value(Value.Op.eq, date))
-
-    fun popular_by_week(date: Date) = order(Order.score).date(Value(Value.Op.bt, date.firstDayOfWeek(), date.lastDayOfWeek()))
-
-    fun popular_by_month(date: Date) = order(Order.score).date(Value(Value.Op.bt, date.firstDayOfMonth(), date.lastDayOfMonth()))
-
-    fun popular_by_year(date: Date) = order(Order.score).date(Value(Value.Op.bt, date.firstDayOfYear(), date.lastDayOfYear()))
-
+    fun popular_by_day(date: Date) = order(Order.score).date(date)
+    fun popular_by_week(date: Date) = order(Order.score).date(date.firstDayOfWeek(), date.lastDayOfWeek())
+    fun popular_by_month(date: Date) = order(Order.score).date(date.firstDayOfMonth(), date.lastDayOfMonth())
+    fun popular_by_year(date: Date) = order(Order.score).date(date.firstDayOfYear(), date.lastDayOfYear())
     fun popular(type: String, date: Date) = when (type) {
         "day" -> popular_by_day(date)
         "week" -> popular_by_week(date)
@@ -665,8 +679,17 @@ class Q(m: Map<String, Any>? = mapOf()) : Parcelable {
         else -> throw IllegalArgumentException()
     }
 
-    override fun toString(): String = map.asSequence()
-        .map { it.key to "${it.value}" }
+    fun toString(iq: Boolean) = map.asSequence()
+        .map {
+            when (val v = it.value) {
+                is IQ -> it.key to (if (iq) v.toQuery() else v)
+                Rating._safe -> "-${it.key}" to Rating.safe
+                Rating._questionable -> "-${it.key}" to Rating.questionable
+                Rating._explicit -> "-${it.key}" to Rating.explicit
+                else -> it.key to v
+            }
+        }
+        .map { it.first to "${it.second}" }
         .filter { it.second.isNotEmpty() }
         .sortedBy { it.first }
         .joinToString(" ") {
@@ -675,6 +698,10 @@ class Q(m: Map<String, Any>? = mapOf()) : Parcelable {
                 else -> "${it.first}:${it.second}"
             }
         }
+
+    override fun toString(): String = toString(false)
+
+    override fun toQuery(): String = toString(true)
 
     override fun equals(other: Any?): Boolean = when (other) {
         is Q -> this.toString() == other.toString()
@@ -697,30 +724,33 @@ class Q(m: Map<String, Any>? = mapOf()) : Parcelable {
 
     constructor(source: Q?) : this(source?.map)
     constructor(source: String?) : this(source?.takeIf { it.isNotEmpty() }?.split(' ', '+')
+        ?.asSequence()?.map { Uri.decode(it) }
         ?.map { it.split(':', limit = 2) }
-        ?.let { list -> listOf(listOf(list.filter { it.size == 1 }.flatten().joinToString(" "))) + (list.filter { it.size > 1 }) }
         ?.filter { it.any { i -> i.isNotEmpty() } }
-        ?.associate { list ->
-            when (list.size) {
-                1 -> "keyword" to list.first()
-                2 -> when (list.first()) {
-                    "order" -> list.first() to list.last().let { v -> Order.values().single { it.value == v } }
-                    "rating" -> list.first() to list.last().let { v -> Rating.values().single { it.value == v } }
-                    "id", "width", "height", "score" -> list.first() to list.last().let { v ->
-                        Value.from(v) { it.toIntOrNull() ?: 0 }
-                    }
-                    "mpixels" -> list.first() to list.last().let { v ->
-                        Value.from(v) { it.toFloatOrNull() ?: 0 }
-                    }
-                    "date" -> list.first() to list.last().let { v ->
-                        Value.from(v) { formatter.parse(it) }
-                    }
-                    "vote" -> list.first() to list.last().let { v ->
-                        Value.from(v) { it.toIntOrNull() ?: 0 }
-                    }
-                    else -> list.first() to list.last()
-                }
-                else -> throw  IllegalArgumentException()
+        ?.groupBy {
+            if (it.size == 2) when (it.first()) {
+                "-rating" -> it.first()
+                in cheats.keys -> it.first()
+                else -> "keyword"
+            } else "keyword"
+        }
+        ?.map { kv ->
+            kv.key to when (kv.key) {
+                "keyword" -> kv.value.map { it.joinToString(":") }.filter { it.isNotEmpty() }.joinToString(" ")
+                else -> kv.value.first().last()
+            }
+        }
+        ?.associate { kv ->
+            when (kv.first) {
+                "order" -> kv.first to kv.second.let { v -> Order.entries.single { it.value == v } }
+                "rating" -> kv.first to kv.second.let { v -> Rating.entries.single { it.value == v } }
+                "-rating" -> kv.first to "-${kv.second}".let { v -> Rating.entries.single { it.value == v } }
+                "id", "width", "height", "score" -> kv.first to kv.second.let { v -> Value.from(v) { it.toIntOrNull() ?: 0 } }
+                "mpixels" -> kv.first to kv.second.let { v -> Value.from(v) { it.toFloatOrNull() ?: 0 } }
+                "date" -> kv.first to kv.second.let { v -> Value.from(v) { ValueDate(it.toIntOrNull(), formatter.tryParse(it)) } }
+                "vote" -> kv.first to kv.second.let { v -> Value.from(v) { it.toIntOrNull() ?: 0 } }
+                in cheats.keys -> kv.first to kv.second
+                else -> throw IllegalArgumentException()
             }
         }
     )
@@ -902,7 +932,7 @@ object OAuth {
     val avatar = MutableLiveData<Int>()
 
     init {
-        ProcessLifecycleOwner.get().lifecycleScope.launchWhenCreated {
+        ProcessLifecycleOwner.get().launchWhenCreated {
             user.asFlow().distinctUntilChanged().collectLatest {
                 name.postValue(if (it == 0) "" else runCatching { Service.instance.user(it).firstOrNull()?.name }.getOrElse { "" })
             }
@@ -913,13 +943,12 @@ object OAuth {
     val timestamp = MutableLiveData(calendar().time.time / 1000)
     fun face(id: Int) = if (id > 0) "$moeUrl/data/avatars/$id.jpg?${timestamp.value}" else null
     fun avatar(owner: LifecycleOwner, id: Int, post_id: Int, left: Float, right: Float, top: Float, bottom: Float, fn: (Int) -> Unit) {
-        owner.lifecycleScope.launchWhenCreated {
-            runCatching { Service.instance.avatar(id, post_id, left, right, top, bottom, Service.csrf()!!) }
-                .onSuccess {
-                    timestamp.postValue(calendar().time.time / 1000)
-                    avatar.postValue(post_id)
-                    fn(post_id)
-                }
+        owner.launchWhenCreated {
+            runCatching { Service.instance.avatar(id, post_id, left, right, top, bottom, Service.csrf()!!) }.onSuccess {
+                timestamp.postValue(calendar().time.time / 1000)
+                avatar.postValue(post_id)
+                fn(post_id)
+            }
         }
     }
 
@@ -943,7 +972,7 @@ object OAuth {
         MaterialAlertDialogBuilder(fragment.requireContext())
             .setTitle(R.string.user_logout)
             .setPositiveButton(R.string.user_logout) { _, _ ->
-                fragment.lifecycleScope.launchWhenCreated {
+                fragment.launchWhenCreated {
 //                    runCatching { Service.instance.logout() }
                     okPersistor.clear()
                     okCookie.clear()
@@ -961,7 +990,7 @@ object OAuth {
             val pass = view.edit2.text.toString()
             view.indicator.isInvisible = false
             alert.window?.decorView?.childrenRecursively?.mapNotNull { it as? TextView }?.forEach { it.isEnabled = false }
-            fragment.lifecycleScope.launchWhenCreated {
+            fragment.launchWhenCreated {
                 runCatching { Service.instance.login(name, pass, Service.csrf()!!) }
                 view.indicator.isInvisible = true
                 alert.window?.decorView?.childrenRecursively?.mapNotNull { it as? TextView }?.forEach { it.isEnabled = true }
@@ -992,7 +1021,7 @@ object OAuth {
             }
             view.indicator.isInvisible = false
             alert.window?.decorView?.childrenRecursively?.mapNotNull { it as? TextView }?.forEach { it.isEnabled = false }
-            fragment.lifecycleScope.launchWhenCreated {
+            fragment.launchWhenCreated {
                 val result = runCatching { Service.instance.register(name, pwd, email, Service.csrf()!!) }.getOrNull()
                 view.indicator.isInvisible = true
                 alert.window?.decorView?.childrenRecursively?.mapNotNull { it as? TextView }?.forEach { it.isEnabled = true }
@@ -1014,7 +1043,7 @@ object OAuth {
             val email = view.editEmail.text.toString()
             view.indicator.isInvisible = false
             alert.window?.decorView?.childrenRecursively?.mapNotNull { it as? TextView }?.forEach { it.isEnabled = false }
-            fragment.lifecycleScope.launchWhenCreated {
+            fragment.launchWhenCreated {
                 val result = runCatching { Service.instance.reset(name, email, Service.csrf()!!) }.getOrNull()
                 view.indicator.isInvisible = true
                 alert.window?.decorView?.childrenRecursively?.mapNotNull { it as? TextView }?.forEach { it.isEnabled = true }
@@ -1036,7 +1065,7 @@ object OAuth {
             val pwd = view.editPwd.text.toString()
             view.indicator.isInvisible = false
             alert.window?.decorView?.childrenRecursively?.mapNotNull { it as? TextView }?.forEach { it.isEnabled = false }
-            fragment.lifecycleScope.launchWhenCreated {
+            fragment.launchWhenCreated {
                 val result = runCatching { Service.instance.change_email(pwd, email, Service.csrf()!!) }.getOrNull()
                 view.indicator.isInvisible = true
                 alert.window?.decorView?.childrenRecursively?.mapNotNull { it as? TextView }?.forEach { it.isEnabled = true }
@@ -1064,7 +1093,7 @@ object OAuth {
             }
             view.indicator.isInvisible = false
             alert.window?.decorView?.childrenRecursively?.mapNotNull { it as? TextView }?.forEach { it.isEnabled = false }
-            fragment.lifecycleScope.launchWhenCreated {
+            fragment.launchWhenCreated {
                 val result = runCatching { Service.instance.change_pwd(old, pwd, Service.csrf()!!) }.getOrNull()
                 view.indicator.isInvisible = true
                 alert.window?.decorView?.childrenRecursively?.mapNotNull { it as? TextView }?.forEach { it.isEnabled = true }

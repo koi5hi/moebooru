@@ -4,23 +4,50 @@ import android.app.ActivityOptions
 import android.content.Intent
 import android.os.Bundle
 import android.os.Parcelable
-import android.view.*
+import android.view.LayoutInflater
+import android.view.Menu
+import android.view.MenuItem
+import android.view.View
+import android.view.ViewGroup
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.os.bundleOf
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
-import androidx.lifecycle.*
+import androidx.lifecycle.AbstractSavedStateViewModelFactory
+import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.asFlow
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import androidx.savedstate.SavedStateRegistryOwner
+import com.bumptech.glide.Glide
 import com.bumptech.glide.load.resource.drawable.DrawableTransitionOptions
-import com.github.yueeng.moebooru.databinding.*
+import com.github.yueeng.moebooru.databinding.FragmentStarBinding
+import com.github.yueeng.moebooru.databinding.FragmentUserBinding
+import com.github.yueeng.moebooru.databinding.UserImageItemBinding
+import com.github.yueeng.moebooru.databinding.UserTagItemBinding
+import com.github.yueeng.moebooru.databinding.UserTitleItemBinding
+import com.github.yueeng.moebooru.databinding.VoteTitleItemBinding
+import com.github.yueeng.moebooru.databinding.VoteUserItemBinding
 import com.google.android.flexbox.FlexDirection
 import com.google.android.flexbox.FlexboxLayoutManager
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.flattenMerge
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.parcelize.Parcelize
 import okhttp3.Request
 import org.jsoup.Jsoup
@@ -30,8 +57,7 @@ class UserActivity : MoeActivity(R.layout.activity_container) {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         supportFragmentManager.run {
-            val fragment = supportFragmentManager.findFragmentById(R.id.container) as? UserOtherFragment
-                ?: UserOtherFragment().apply { arguments = intent.extras }
+            val fragment = supportFragmentManager.findFragmentById(R.id.container) as? UserFragment ?: UserFragment().apply { arguments = intent.extras }
             beginTransaction().replace(R.id.container, fragment).commit()
         }
     }
@@ -50,66 +76,43 @@ class UserViewModelFactory(owner: SavedStateRegistryOwner, private val args: Bun
     override fun <T : ViewModel> create(key: String, modelClass: Class<T>, handle: SavedStateHandle): T = UserViewModel(handle, args) as T
 }
 
-class UserOtherFragment : UserFragment() {
-    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View = super.onCreateView(inflater, container, savedInstanceState).also { view ->
-        val binding = FragmentUserBinding.bind(view)
-        (requireActivity() as AppCompatActivity).setSupportActionBar(binding.toolbar)
-        lifecycleScope.launchWhenCreated {
-            model.name.asFlow().mapNotNull { it }.distinctUntilChanged().collectLatest { name ->
-                requireActivity().title = name.toTitleCase()
-            }
-        }
-    }
-}
-
 class UserMineFragment : UserFragment() {
-    fun prepareOptionsMenu(menu: Menu) {
+    private fun prepareOptionsMenu(menu: Menu) {
         val auth = OAuth.user.value != null && OAuth.user.value != 0
         menu.findItem(R.id.userLogin).isVisible = !auth
         menu.findItem(R.id.userLogout).isVisible = auth
     }
 
-    fun optionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
-        R.id.login -> true.also { OAuth.login(this) }
-        R.id.register -> true.also { OAuth.register(this) }
-        R.id.reset -> true.also { OAuth.reset(this) }
-        R.id.logout -> true.also { OAuth.logout(this) }
-        R.id.changeEmail -> true.also { OAuth.changeEmail(this) }
-        R.id.changePwd -> true.also { OAuth.changePwd(this) }
-        else -> false
-    }
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View = super.onCreateView(inflater, container, savedInstanceState).also { view ->
         val binding = FragmentUserBinding.bind(view)
         prepareOptionsMenu(binding.toolbar.menu)
-        binding.toolbar.setOnMenuItemClickListener { optionsItemSelected(it) }
-        lifecycleScope.launchWhenCreated {
+        launchWhenCreated {
             OAuth.user.asFlow().collectLatest {
                 prepareOptionsMenu(binding.toolbar.menu)
                 model.user.postValue(it)
             }
         }
-        lifecycleScope.launchWhenCreated {
+
+        launchWhenCreated {
             OAuth.name.asFlow().collectLatest {
                 model.name.postValue(it)
             }
         }
-        lifecycleScope.launchWhenCreated {
-            model.name.asFlow().mapNotNull { it }.collectLatest { name ->
-                binding.toolbar.title = name.toTitleCase()
-            }
-        }
-        lifecycleScope.launchWhenCreated {
+
+        launchWhenCreated {
             OAuth.avatar.asFlow().filter { model.avatar.value != it }.collectLatest {
                 model.avatar.postValue(it)
             }
         }
-        lifecycleScope.launchWhenCreated {
+
+        launchWhenCreated {
             model.avatar.asFlow().filter { OAuth.avatar.value != it }.collectLatest {
                 OAuth.avatar.postValue(it)
             }
         }
-        lifecycleScope.launchWhenCreated {
+
+        launchWhenCreated {
             OAuth.timestamp.asFlow().drop(1).collectLatest {
                 face(binding, model.user.value)
             }
@@ -122,33 +125,54 @@ open class UserFragment : Fragment() {
     private val adapter by lazy { ImageAdapter() }
     private val busy = MutableLiveData(false)
 
-    @OptIn(FlowPreview::class)
+    private fun optionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.login -> true.also { OAuth.login(this) }
+        R.id.register -> true.also { OAuth.register(this) }
+        R.id.reset -> true.also { OAuth.reset(this) }
+        R.id.logout -> true.also { OAuth.logout(this) }
+        R.id.changeEmail -> true.also { OAuth.changeEmail(this) }
+        R.id.changePwd -> true.also { OAuth.changePwd(this) }
+        R.id.userAvatar -> true.also {
+            if ((model.avatar.value ?: 0) == 0) return@also
+            val binding = FragmentUserBinding.bind(requireView())
+            val options = binding.toolbar.findViewById<View>(item.itemId)?.let { ActivityOptions.makeSceneTransitionAnimation(requireActivity(), it, "shared_element_container") }
+            startActivity(Intent(requireContext(), PreviewActivity::class.java).putExtra("query", Q().id(model.avatar.value!!)), options?.toBundle())
+        }
+
+        else -> false
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View =
         FragmentUserBinding.inflate(inflater, container, false).also { binding ->
-            binding.toolbar.setNavigationOnClickListener {
-                if ((model.avatar.value ?: 0) == 0) return@setNavigationOnClickListener
-                val options = ActivityOptions.makeSceneTransitionAnimation(requireActivity(), it, "shared_element_container")
-                startActivity(Intent(requireContext(), PreviewActivity::class.java).putExtra("query", Q().id(model.avatar.value!!)), options.toBundle())
-            }
+            binding.toolbar.menu.findItem(R.id.userLogin).isVisible = false
+            binding.toolbar.menu.findItem(R.id.userLogout).isVisible = false
+            binding.toolbar.setOnMenuItemClickListener { optionsItemSelected(it) }
             (binding.recycler.layoutManager as? FlexboxLayoutManager)?.flexDirection = FlexDirection.ROW
             adapter.stateRestorationPolicy = RecyclerView.Adapter.StateRestorationPolicy.PREVENT_WHEN_EMPTY
             binding.recycler.adapter = adapter
             binding.swipe.setOnRefreshListener {
-                lifecycleScope.launchWhenCreated { query() }
+                launchWhenCreated { query() }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 model.user.asFlow().filter { it == 0 }.collectLatest {
                     model.data.postValue(emptyArray())
                     model.avatar.postValue(0)
                     model.background.postValue("")
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 model.user.asFlow().distinctUntilChanged().collectLatest {
                     face(binding, it)
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
+                model.name.asFlow().mapNotNull { it }.collectLatest { name ->
+                    binding.collapsing.title = name.toTitleCase()
+                    binding.toolbar.title = name.toTitleCase()
+                }
+            }
+            launchWhenCreated {
                 val user = model.user.asFlow().distinctUntilChanged()
                 val name = model.name.asFlow().distinctUntilChanged()
                 flowOf(user, name).flattenMerge(2).collectLatest {
@@ -158,7 +182,7 @@ open class UserFragment : Fragment() {
                     query()
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 model.avatar.asFlow().distinctUntilChanged().collectLatest { id ->
                     if (id == 0) {
                         binding.toolbar.navigationIcon = null
@@ -168,30 +192,30 @@ open class UserFragment : Fragment() {
                     model.background.postValue(bg)
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 model.background.asFlow().distinctUntilChanged().collectLatest { url ->
                     if (url.isEmpty()) {
                         binding.image1.setImageDrawable(null)
                         return@collectLatest
                     }
-                    GlideApp.with(binding.image1)
+                    Glide.with(binding.image1)
                         .load(url)
                         .transform(AlphaBlackBitmapTransformation())
                         .transition(DrawableTransitionOptions.withCrossFade())
                         .into(binding.image1)
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 model.data.asFlow().collectLatest { adapter.submitList(it.toList()) }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 busy.asFlow().collectLatest { binding.swipe.isRefreshing = it }
             }
         }.root
 
     protected fun face(binding: FragmentUserBinding, id: Int?) {
         if (id == null || id == 0) return
-        GlideApp.with(binding.toolbar)
+        Glide.with(binding.toolbar)
             .load(OAuth.face(id))
             .placeholder(R.mipmap.ic_launcher_foreground)
             .override(120, 120)
@@ -298,7 +322,7 @@ open class UserFragment : Fragment() {
             (binding.root.layoutParams as? FlexboxLayoutManager.LayoutParams)?.flexGrow = 1.0f
             binding.root.setOnClickListener {
                 val adapter = bindingAdapter as ImageAdapter
-                val title = adapter.currentList.reversed().dropWhile { it != tag }.mapNotNull { it as? Title }.firstOrNull()!!
+                val title = adapter.currentList.reversed().dropWhile { it != tag }.firstNotNullOfOrNull { it as? Title }!!
                 val options = ActivityOptions.makeSceneTransitionAnimation(activity, binding.root, "shared_element_container")
                 requireActivity().startActivity(
                     Intent(context, PreviewActivity::class.java).putExtra("query", Q(title.query)).putExtra("id", tag!!.id),
@@ -390,7 +414,7 @@ class StarFragment : Fragment() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (model.data.value == null) {
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 model.data(post)?.let { model.data.postValue(it) }
             }
         }
@@ -399,11 +423,11 @@ class StarFragment : Fragment() {
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View =
         FragmentStarBinding.inflate(inflater, container, false).also { binding ->
             (requireActivity() as AppCompatActivity).setSupportActionBar(binding.toolbar)
-            model.star.observe(viewLifecycleOwner, Observer {
+            model.star.observe(viewLifecycleOwner) {
                 binding.rating.rating = it.toFloat()
                 requireActivity().title = getString(R.string.query_vote_star_yours, it)
-            })
-            lifecycleScope.launchWhenCreated {
+            }
+            launchWhenCreated {
                 adapter.changedFlow.collectLatest {
                     adapter.currentList.mapIndexedNotNull { index, any -> (any as? Title)?.let { index } }
                         .forEach { adapter.notifyItemChanged(it, "count") }
@@ -411,7 +435,7 @@ class StarFragment : Fragment() {
             }
             binding.rating.setOnRatingBarChangeListener { _, rating, fromUser ->
                 if (!fromUser) return@setOnRatingBarChangeListener
-                lifecycleScope.launchWhenCreated {
+                launchWhenCreated {
                     model.vote(post, rating.toInt())?.let {
                         model.data.postValue(it)
                         model.star.postValue(rating.toInt())
@@ -419,7 +443,7 @@ class StarFragment : Fragment() {
                 }
             }
             binding.button1.setOnClickListener {
-                lifecycleScope.launchWhenCreated {
+                launchWhenCreated {
                     model.vote(post, 0)?.let {
                         model.data.postValue(it)
                         binding.rating.rating = 0F
@@ -436,17 +460,17 @@ class StarFragment : Fragment() {
                 }
             }
             binding.recycler.adapter = adapter
-            model.data.observe(viewLifecycleOwner, Observer { score ->
+            model.data.observe(viewLifecycleOwner) { score ->
                 adapter.submitList(score.voted_by.v.flatMap { listOf(Title(it.key, it.value.size)) + it.value })
-            })
+            }
             binding.swipe.setOnRefreshListener {
-                lifecycleScope.launchWhenCreated {
+                launchWhenCreated {
                     model.data(post)?.let { model.data.postValue(it) }
                 }
             }
-            model.busy.observe(viewLifecycleOwner, Observer {
+            model.busy.observe(viewLifecycleOwner) {
                 binding.swipe.isRefreshing = it
-            })
+            }
         }.root
 
     data class Title(val star: Int, val count: Int) {
@@ -481,7 +505,7 @@ class StarFragment : Fragment() {
         fun bind(value: ItemUser) {
             progress.postValue(value.face)
             this.value = value
-            GlideApp.with(binding.image1).load(value.face)
+            Glide.with(binding.image1).load(value.face)
                 .error(R.mipmap.ic_launcher)
                 .onComplete { _, _, _, _ -> progress.postValue(""); false }
                 .into(binding.image1)
@@ -489,7 +513,6 @@ class StarFragment : Fragment() {
         }
     }
 
-    @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
     inner class StarAdapter : ListAdapter<Any, RecyclerView.ViewHolder>(diffCallback { old, new -> old == new }) {
         override fun getItemViewType(position: Int): Int = when (getItem(position)) {
             is Title -> 0

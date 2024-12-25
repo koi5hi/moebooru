@@ -5,15 +5,22 @@ package com.github.yueeng.moebooru
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.*
-import android.content.*
+import android.content.ContentValues
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
+import android.content.pm.ServiceInfo
 import android.content.res.Resources
 import android.graphics.*
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.Settings
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.TextUtils.copySpansFrom
@@ -25,6 +32,10 @@ import android.webkit.MimeTypeMap
 import android.webkit.URLUtil
 import android.webkit.WebSettings
 import android.widget.*
+import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.OnBackPressedDispatcher
+import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
@@ -36,7 +47,9 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.core.content.IntentCompat
 import androidx.core.net.toUri
+import androidx.core.os.BundleCompat
 import androidx.core.view.children
 import androidx.core.view.isGone
 import androidx.core.view.isInvisible
@@ -53,6 +66,7 @@ import androidx.work.*
 import com.bumptech.glide.Glide
 import com.bumptech.glide.GlideBuilder
 import com.bumptech.glide.Registry
+import com.bumptech.glide.RequestBuilder
 import com.bumptech.glide.annotation.Excludes
 import com.bumptech.glide.annotation.GlideModule
 import com.bumptech.glide.integration.okhttp3.OkHttpUrlLoader
@@ -97,6 +111,7 @@ import org.kohsuke.github.extras.okhttp3.OkHttpGitHubConnector
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.io.Serializable
 import java.net.InetAddress
 import java.security.MessageDigest
 import java.text.DateFormat
@@ -104,6 +119,7 @@ import java.util.*
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
 
 fun debug(call: () -> Unit) {
     if (BuildConfig.DEBUG) call()
@@ -126,8 +142,7 @@ val okCookie = object : PersistentCookieJar(okCookieCache, okPersistor) {
 }
 val okDns = object : Dns {
     override fun lookup(hostname: String): List<InetAddress> = when {
-        MoeSettings.host.value == true && hostname.endsWith(moeHost) ->
-            runCatching { listOf(InetAddress.getByName(MoeSettings.ip.value)) }.getOrNull()
+        MoeSettings.host.value == true && hostname.endsWith(moeHost) -> runCatching { listOf(InetAddress.getByName(MoeSettings.ip.value.takeIf { !it.isNullOrBlank() } ?: MainApplication.instance().getString(R.string.app_ip))) }.getOrNull()
         else -> null
     } ?: Dns.SYSTEM.lookup(hostname)
 }
@@ -235,13 +250,12 @@ object ProgressBehavior {
             if ((sum[url] ?: 0) != 0) return@synchronized
             sum.remove(url)
             map.remove(url)
-//            Log.i("PBMAPS", "${map.size}")
         }
     }
 
     @OptIn(FlowPreview::class)
     fun progress(lifecycleOwner: LifecycleOwner, progressBar: ProgressBar) = MutableLiveData<String>().apply {
-        lifecycleOwner.lifecycleScope.launchWhenCreated {
+        lifecycleOwner.launchWhenCreated {
             asFlow().collectLatest { image ->
                 progressBar.isVisible = false
                 progressBar.progress = 0
@@ -256,24 +270,24 @@ object ProgressBehavior {
     }
 }
 
-fun <TranscodeType> GlideRequest<TranscodeType>.onResourceReady(call: (resource: TranscodeType, model: Any?, target: Target<TranscodeType>?, dataSource: DataSource?, isFirstResource: Boolean) -> Boolean) = addListener(object : RequestListener<TranscodeType> {
-    override fun onLoadFailed(e: GlideException?, model: Any?, target: Target<TranscodeType>?, isFirstResource: Boolean): Boolean = false
-    override fun onResourceReady(resource: TranscodeType, model: Any?, target: Target<TranscodeType>?, dataSource: DataSource?, isFirstResource: Boolean): Boolean =
+fun <TranscodeType> RequestBuilder<TranscodeType>.onResourceReady(call: (resource: TranscodeType, model: Any?, target: Target<TranscodeType>?, dataSource: DataSource?, isFirstResource: Boolean) -> Boolean) = addListener(object : RequestListener<TranscodeType> {
+    override fun onLoadFailed(e: GlideException?, model: Any?, target: Target<TranscodeType>, isFirstResource: Boolean): Boolean = false
+    override fun onResourceReady(resource: TranscodeType & Any, model: Any, target: Target<TranscodeType>?, dataSource: DataSource, isFirstResource: Boolean): Boolean =
         call(resource, model, target, dataSource, isFirstResource)
 })
 
-fun <TranscodeType> GlideRequest<TranscodeType>.onLoadFailed(call: (e: GlideException?, model: Any?, target: Target<TranscodeType>?, isFirstResource: Boolean) -> Boolean) = addListener(object : RequestListener<TranscodeType> {
-    override fun onLoadFailed(e: GlideException?, model: Any?, target: Target<TranscodeType>?, isFirstResource: Boolean): Boolean =
+fun <TranscodeType> RequestBuilder<TranscodeType>.onLoadFailed(call: (e: GlideException?, model: Any?, target: Target<TranscodeType>?, isFirstResource: Boolean) -> Boolean) = addListener(object : RequestListener<TranscodeType> {
+    override fun onLoadFailed(e: GlideException?, model: Any?, target: Target<TranscodeType>, isFirstResource: Boolean): Boolean =
         call(e, model, target, isFirstResource)
 
-    override fun onResourceReady(resource: TranscodeType, model: Any?, target: Target<TranscodeType>?, dataSource: DataSource?, isFirstResource: Boolean): Boolean = false
+    override fun onResourceReady(resource: TranscodeType & Any, model: Any, target: Target<TranscodeType>?, dataSource: DataSource, isFirstResource: Boolean): Boolean = false
 })
 
-fun <TranscodeType> GlideRequest<TranscodeType>.onComplete(call: (model: Any?, target: Target<TranscodeType>?, isFirstResource: Boolean, succeeded: Boolean) -> Boolean) = addListener(object : RequestListener<TranscodeType> {
-    override fun onLoadFailed(e: GlideException?, model: Any?, target: Target<TranscodeType>?, isFirstResource: Boolean): Boolean =
+fun <TranscodeType> RequestBuilder<TranscodeType>.onComplete(call: (model: Any?, target: Target<TranscodeType>?, isFirstResource: Boolean, succeeded: Boolean) -> Boolean) = addListener(object : RequestListener<TranscodeType> {
+    override fun onLoadFailed(e: GlideException?, model: Any?, target: Target<TranscodeType>, isFirstResource: Boolean): Boolean =
         call(model, target, isFirstResource, false)
 
-    override fun onResourceReady(resource: TranscodeType, model: Any?, target: Target<TranscodeType>?, dataSource: DataSource?, isFirstResource: Boolean): Boolean =
+    override fun onResourceReady(resource: TranscodeType & Any, model: Any, target: Target<TranscodeType>?, dataSource: DataSource, isFirstResource: Boolean): Boolean =
         call(model, target, isFirstResource, true)
 })
 
@@ -288,16 +302,16 @@ class SimpleDrawableCustomViewTarget<T : View>(view: T, private val call: (view:
     override fun onResourceCleared(placeholder: Drawable?) = call(view, placeholder)
 }
 
-fun <T : View> GlideRequest<Drawable>.into(view: T, call: (view: T, drawable: Drawable?) -> Unit) = into(SimpleDrawableCustomViewTarget(view, call))
+fun <T : View> RequestBuilder<Drawable>.into(view: T, call: (view: T, drawable: Drawable?) -> Unit) = into(SimpleDrawableCustomViewTarget(view, call))
 
 val random = Random(System.currentTimeMillis())
 
 fun randomColor(alpha: Int = 0xFF, saturation: Float = 1F, value: Float = 0.5F) =
     Color.HSVToColor(alpha, arrayOf(random.nextInt(360).toFloat(), saturation, value).toFloatArray())
 
-fun ImageView.glideUrl(url: String, placeholder: Int? = null): GlideRequest<Drawable> {
+fun ImageView.glideUrl(url: String, placeholder: Int? = null): RequestBuilder<Drawable> {
     scaleType = ImageView.ScaleType.CENTER
-    return GlideApp.with(this)
+    return Glide.with(this)
         .load(url)
         .transition(DrawableTransitionOptions.withCrossFade())
         .run { if (placeholder != null) placeholder(placeholder) else this }
@@ -348,6 +362,7 @@ class SymbolsTokenizer(private val symbols: Set<Char>) : MultiAutoCompleteTextVi
                 copySpansFrom(text, 0, text.length, Any::class.java, sp, 0)
                 sp
             }
+
             else -> "$text "
         }
     }
@@ -360,6 +375,7 @@ fun String.toTitleCase(vararg delimiters: String = arrayOf("_")) = delimiters.fo
     }
 }
 
+fun Date.toCalendar(zone: TimeZone? = null): Calendar = calendar(zone).apply { time = this@toCalendar }
 fun Date.firstDayOfWeek(index: Int = 1, firstOfWeek: Int = Calendar.MONDAY): Date = calendar().let { calendar ->
     calendar.firstDayOfWeek = firstOfWeek
     calendar.time = this
@@ -413,6 +429,7 @@ class TimeSpan(val end: Calendar, val begin: Calendar) {
                 end.millisecondOfDay > begin.millisecondOfDay -> -2
                 else -> -1
             }
+
             end.millisecondOfDay < begin.millisecondOfDay -> 2
             else -> 1
         }
@@ -422,6 +439,7 @@ class TimeSpan(val end: Calendar, val begin: Calendar) {
                 end.dayOfWeek > begin.dayOfWeek -> -2
                 else -> -1
             }
+
             end.dayOfWeek < begin.dayOfWeek -> 2
             else -> 1
         }
@@ -499,7 +517,7 @@ class SharedViewModelStoreOwner(private val key: String, life: LifecycleOwner) :
         life.lifecycle.addObserver(this)
     }
 
-    override fun getViewModelStore(): ViewModelStore = map[key]?.store?.value ?: throw IllegalArgumentException("ViewModelStore lazy error.")
+    override val viewModelStore: ViewModelStore get() = map[key]?.store?.value ?: throw IllegalArgumentException("ViewModelStore lazy error.")
 
     override fun onStateChanged(source: LifecycleOwner, event: Lifecycle.Event) {
         if (event == Lifecycle.Event.ON_CREATE) add(key)
@@ -533,34 +551,37 @@ object Save {
     class SaveWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
         val id by lazy { inputData.getInt("id", 0) }
         val url by lazy { inputData.getString("url")!! }
-        val option by lazy { inputData.getInt("option", 0).let { SO.values()[it] } }
+        val option by lazy { inputData.getInt("option", 0).let { SO.entries[it] } }
         val fileName get() = fileNameEncode(url.toHttpUrl().pathSegments.last())
         val target by lazy { File(applicationContext.cacheDir, UUID.randomUUID().toString()) }
         val notification: NotificationCompat.Builder by lazy {
             NotificationCompat.Builder(context, moeHost)
-                .setContentTitle(context.getString(R.string.app_download, context.getString(R.string.app_name)))
+                .setContentTitle(context.getString(R.string.app_downloaded, context.getString(R.string.app_name)))
                 .setContentText(fileName)
                 .setSmallIcon(R.drawable.ic_stat_name)
                 .setOngoing(true)
         }
 
-        override suspend fun getForegroundInfo(): ForegroundInfo = ForegroundInfo(id, notification.build())
+        override suspend fun getForegroundInfo(): ForegroundInfo =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ForegroundInfo(id, notification.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            else ForegroundInfo(id, notification.build())
 
         @SuppressLint("MissingPermission")
         @OptIn(FlowPreview::class)
         override suspend fun doWork(): Result = try {
-            notification.setContentTitle(applicationContext.getString(R.string.app_download, applicationContext.getString(R.string.app_name)))
+            notification.setContentTitle(applicationContext.getString(R.string.app_downloaded, applicationContext.getString(R.string.app_name)))
                 .setProgress(0, 0, true)
                 .setSmallIcon(R.drawable.ic_stat_name)
                 .setOngoing(true)
-            setForeground(ForegroundInfo(id, notification.build()))
+
+            setForeground(getForegroundInfo())
             coroutineScope {
                 val channel = Channel<Pair<Long, Long>>(Channel.CONFLATED)
                 launch {
                     channel.consumeAsFlow().sample(500).collectLatest {
                         notification.setProgress(it.second.toInt(), it.first.toInt(), false)
                             .setContentText("${it.first.sizeString()}/${it.second.sizeString()}")
-                        setForeground(ForegroundInfo(id, notification.build()))
+                        setForeground(getForegroundInfo())
                     }
                 }
                 launch {
@@ -591,7 +612,7 @@ object Save {
                         val del = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                             put(MediaStore.Images.ImageColumns.RELATIVE_PATH, "Pictures/$moeHost")
                             MediaStore.Images.ImageColumns.RELATIVE_PATH to "Pictures/$moeHost"
-                        } else @Suppress("DEPRECATION") {
+                        } else {
                             val picture = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
                             val folder = File(picture, moeHost).apply { mkdirs() }
                             val file = File(folder, fileName)
@@ -611,21 +632,22 @@ object Save {
                         }
                     }
                     applicationContext.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)?.also { uri ->
-                        @Suppress("BlockingMethodInNonBlockingContext")
                         applicationContext.contentResolver.openOutputStream(uri)?.use { output ->
                             target.inputStream().use { it.copyTo(output) }
                         }
                     }
                 }
+
                 SO.SHARE -> {
                     val file = File(File(applicationContext.cacheDir, "shared").apply { mkdirs() }, fileName).also(target::renameTo)
                     FileProvider.getUriForFile(applicationContext, "${BuildConfig.APPLICATION_ID}.fileprovider", file)
                 }
+
                 SO.WALLPAPER -> target.inputStream().use { stream ->
-                    @Suppress("BlockingMethodInNonBlockingContext")
                     WallpaperManager.getInstance(applicationContext).setStream(stream)
                     null
                 }
+
                 SO.CROP -> {
                     applicationContext.startActivity(
                         Intent(applicationContext, CropActivity::class.java)
@@ -642,8 +664,7 @@ object Save {
                 val extension = MimeTypeMap.getFileExtensionFromUrl(fileName)
                 val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
                 val intent = Intent(Intent.ACTION_VIEW).apply {
-                    type = mime ?: "image/$extension"
-                    data = shared
+                    setDataAndType(shared, mime ?: "image/$extension")
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
@@ -654,7 +675,7 @@ object Save {
                     .setAutoCancel(true)
                     .setContentIntent(padding)
                 suspendCancellableCoroutine { continuation ->
-                    GlideApp.with(MainApplication.instance()).asBitmap().load(target).override(500, 500)
+                    Glide.with(MainApplication.instance()).asBitmap().load(target).override(500, 500)
                         .into(object : CustomTarget<Bitmap>() {
                             override fun onResourceReady(resource: Bitmap, transition: Transition<in Bitmap>?) {
                                 notification.setStyle(NotificationCompat.BigPictureStyle().bigPicture(resource))
@@ -689,8 +710,8 @@ object Save {
         val data = manager.getWorkInfosForUniqueWorkLiveData(key)
         suspendCancellableCoroutine { continuation ->
             val observer = object : androidx.lifecycle.Observer<List<WorkInfo>> {
-                override fun onChanged(it: List<WorkInfo>?) {
-                    continuation.resume(it?.firstOrNull()?.state)
+                override fun onChanged(value: List<WorkInfo>) {
+                    continuation.resume(value.firstOrNull()?.state)
                     data.removeObserver(this)
                 }
             }
@@ -701,17 +722,44 @@ object Save {
         }
     }
 
-    fun AppCompatActivity.save(
-        id: Int, url: String, so: SO,
-        author: String? = null, anchor: View? = null
-    ) {
-        fun download() {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                NotificationManagerCompat.from(MainApplication.instance()).let { notify ->
-                    val channel = NotificationChannel(moeHost, moeHost, NotificationManager.IMPORTANCE_LOW)
-                    notify.createNotificationChannel(channel)
+    fun AppCompatActivity.save(id: Int, url: String, so: SO, author: String? = null, anchor: View? = null) {
+        suspend fun alert(intent: Intent): Boolean = suspendCancellableCoroutine { continuation ->
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.app_channel_download).setMessage(R.string.app_channel_description)
+                .setPositiveButton(R.string.app_settings) { _, _ ->
+                    startActivity(intent)
+                    continuation.resume(false)
                 }
+                .setNegativeButton(R.string.app_channel_continue) { _, _ -> continuation.resume(true) }
+                .setNeutralButton(R.string.app_channel_dismiss) { _, _ ->
+                    MoeSettings.checkNotification.setValueToPreferences(false)
+                    continuation.resume(true)
+                }
+                .setOnCancelListener { continuation.resume(false) }
+                .show()
+        }
+
+        suspend fun checkNotification(): Boolean {
+            if (MoeSettings.checkNotification.value == false) return true
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return true
+            val manager = NotificationManagerCompat.from(this)
+            if (!manager.areNotificationsEnabled()) {
+                return alert(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                })
             }
+            val channel = manager.getNotificationChannel(moeHost)
+            if (channel?.importance == NotificationManager.IMPORTANCE_NONE) {
+                return alert(Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                    putExtra(Settings.EXTRA_CHANNEL_ID, channel.id)
+                })
+            }
+            return true
+        }
+
+        fun download() {
+            Toast.makeText(this@save, getString(R.string.download_started), Toast.LENGTH_SHORT).show()
             val params = Data.Builder()
                 .putInt("id", id)
                 .putString("url", url)
@@ -724,29 +772,28 @@ object Save {
             }
         }
 
-        fun check() {
-            lifecycleScope.launchWhenCreated {
-                if (anchor == null) download() else when (check("save-${id}")) {
-                    WorkInfo.State.ENQUEUED,
-                    WorkInfo.State.BLOCKED,
-                    WorkInfo.State.RUNNING -> {
-                        Toast.makeText(this@save, getString(R.string.download_running), Toast.LENGTH_SHORT).show()
-                        return@launchWhenCreated
-                    }
-                    WorkInfo.State.SUCCEEDED -> {
-                        anchor.snack(getString(R.string.download_exists), Snackbar.LENGTH_LONG)
-                            .setAnchorView(anchor)
-                            .setAction(R.string.app_ok) { download() }
-                            .show()
-                        return@launchWhenCreated
-                    }
-                    else -> download()
+        fun check() = launchWhenCreated {
+            if (anchor == null) download() else when (check("save-${id}")) {
+                WorkInfo.State.ENQUEUED,
+                WorkInfo.State.BLOCKED,
+                WorkInfo.State.RUNNING -> Toast.makeText(this@save, getString(R.string.download_running), Toast.LENGTH_SHORT).show()
+
+                WorkInfo.State.SUCCEEDED -> {
+                    anchor.snack(getString(R.string.download_exists), Snackbar.LENGTH_LONG)
+                        .setAnchorView(anchor)
+                        .setAction(R.string.app_download) { download() }
+                        .show()
                 }
+
+                else -> download()
             }
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) check() else {
-            checkPermissions(Manifest.permission.WRITE_EXTERNAL_STORAGE) {
-                check()
+        launchWhenCreated {
+            if (!checkNotification()) return@launchWhenCreated
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) check() else {
+                checkPermissions(Manifest.permission.WRITE_EXTERNAL_STORAGE) {
+                    check()
+                }
             }
         }
     }
@@ -794,7 +841,7 @@ class AlphaBlackBitmapTransformation(val alpha: Int = 0x7F, val color: Int = Col
 
     override fun transform(pool: BitmapPool, src: Bitmap, outWidth: Int, outHeight: Int): Bitmap {
         val rect = Rect(0, 0, src.width, src.height)
-        val dest = Bitmap.createBitmap(rect.width(), rect.height(), src.config)
+        val dest = Bitmap.createBitmap(rect.width(), rect.height(), src.config!!)
         val canvas = Canvas(dest)
         canvas.save()
         canvas.drawColor(color)
@@ -861,7 +908,7 @@ fun ProgressBar.setIndeterminateSafe(indeterminate: Boolean) {
     }
     if (indeterminate && isVisible) {
         isInvisible = true
-        isIndeterminate = indeterminate
+        isIndeterminate = true
         isInvisible = false
     } else {
         isIndeterminate = indeterminate
@@ -905,7 +952,7 @@ val View.childrenRecursively: Sequence<View>
 
 fun <V : View> View.findViewByViewType(clazz: Class<V>, id: Int = View.NO_ID): Sequence<View> = if (id != View.NO_ID) {
     findViewById<V>(id)?.let { sequenceOf(it) } ?: emptySequence()
-} else childrenRecursively.filter { clazz.isInstance(it) }.filter { id == View.NO_ID || id == it.id }
+} else childrenRecursively.filter { clazz.isInstance(it) }.filter { id == it.id }
 
 inline fun <reified V : View> View.findViewByViewType(id: Int = View.NO_ID) = findViewByViewType(V::class.java, id)
 
@@ -927,8 +974,11 @@ fun createProcessTextIntent(): Intent = Intent()
     .setType("text/plain")
 
 @RequiresApi(Build.VERSION_CODES.M)
-fun Context.getSupportedActivities(): List<ResolveInfo> = packageManager
-    .queryIntentActivities(createProcessTextIntent(), 0)
+fun Context.getSupportedActivities(): List<ResolveInfo> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+    packageManager.queryIntentActivities(createProcessTextIntent(), PackageManager.ResolveInfoFlags.of(0))
+} else {
+    packageManager.queryIntentActivities(createProcessTextIntent(), 0)
+}
 
 @RequiresApi(Build.VERSION_CODES.M)
 fun createProcessTextIntentForResolveInfo(info: ResolveInfo): Intent = createProcessTextIntent()
@@ -960,30 +1010,43 @@ fun View.showSupportedActivitiesMenu(tag: String) = PopupMenu(context, this).als
 fun <T : Any, VH : RecyclerView.ViewHolder> PagingDataAdapter<T, VH>.peekSafe(index: Int): T? =
     if (index in 0 until itemCount) peek(index) else null
 
-val Context.appVersion: Version?
-    get() = try {
-        Version(packageManager.getPackageInfo(packageName, 0).versionName)
-    } catch (e: Exception) {
-        e.printStackTrace(); null
-    }
-
-fun AppCompatActivity.checkAppUpdate(pre: Boolean = false, compare: Boolean = false): Job = lifecycleScope.launchWhenCreated {
-    val latest = runCatching {
+fun AppCompatActivity.checkAppUpdate(pre: Boolean = false, compare: Boolean = false): Job = launchWhenCreated {
+    val selected = runCatching {
         withContext(Dispatchers.IO) {
             val gitHub: GitHub = GitHubBuilder.fromEnvironment()
                 .withConnector(OkHttpGitHubConnector(okHttp))
                 .build()
             val repository = gitHub.getRepository("yueeng/moebooru")
-            when (pre) {
-                true -> repository.listReleases().firstOrNull()
-                false -> repository.latestRelease
+            if (!pre) return@withContext repository.latestRelease
+            val releases = repository.listReleases().toList()
+            if (!releases.any()) return@withContext null
+            withContext(Dispatchers.Main) {
+                suspendCancellableCoroutine {
+                    MaterialAlertDialogBuilder(this@checkAppUpdate)
+                        .setTitle(R.string.app_pre_release)
+                        .setSingleChoiceItems(releases.map { it.name }.toTypedArray(), 0, null)
+                        .setPositiveButton(R.string.app_ok) { d, _ ->
+                            val index = (d as AlertDialog).listView.checkedItemPosition
+                            it.resume(releases.elementAtOrNull(index))
+                        }.setNegativeButton(R.string.app_cancel) { _, _ ->
+                            it.resume(null)
+                        }.setOnCancelListener { _ ->
+                            it.resume(null)
+                        }.create().show()
+                }
             }
         }
-    }.getOrNull() ?: return@launchWhenCreated
+    }
+    if (selected.isFailure) {
+        if (!compare) Toast.makeText(this@checkAppUpdate, R.string.app_update_error, Toast.LENGTH_SHORT).show()
+        return@launchWhenCreated
+    }
+    val latest = selected.getOrNull() ?: return@launchWhenCreated
     val name = if (compare) {
-        val ver = appVersion ?: return@launchWhenCreated
+        val ver = Version.from(BuildConfig.VERSION_NAME) ?: return@launchWhenCreated
+        val saved = Version.from(MoeSettings.updateVersion.value)?.takeIf { it > ver } ?: ver
         val online = Version.from(latest.tagName) ?: return@launchWhenCreated
-        if (ver >= online) return@launchWhenCreated
+        if (saved >= online) return@launchWhenCreated
         "v$ver > v$online"
     } else latest.name
     val url = runCatching {
@@ -994,9 +1057,10 @@ fun AppCompatActivity.checkAppUpdate(pre: Boolean = false, compare: Boolean = fa
     MaterialAlertDialogBuilder(this@checkAppUpdate)
         .setTitle(name)
         .setMessage(latest.body)
-        .setPositiveButton(getString(R.string.app_download_apk)) { _, _ -> openWeb(url) }
-        .setNegativeButton(R.string.app_cancel, null)
+        .setPositiveButton(getString(R.string.app_download)) { _, _ -> openWeb(url) }
         .apply {
+            if (compare) setNegativeButton(R.string.app_update_ignore) { _, _ -> MoeSettings.updateVersion.setValueToPreferences(latest.tagName) }
+            else setNegativeButton(R.string.app_cancel, null)
             if (!pre) setNeutralButton(getString(R.string.app_pre_release)) { _, _ ->
                 checkAppUpdate(true)
             }
@@ -1024,4 +1088,30 @@ fun AppCompatTextView.setCompoundResourcesDrawables(left: Int? = null, top: Int?
 object PendingIntentCompat {
     val FLAG_MUTABLE get() = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_UPDATE_CURRENT)
     val FLAG_IMMUTABLE get() = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else PendingIntent.FLAG_UPDATE_CURRENT)
+}
+
+inline fun <reified T> Bundle.getParcelableCompat(key: String): T? =
+    BundleCompat.getParcelable(this, key, T::class.java)
+
+inline fun <reified T> Intent.getParcelableExtraCompat(key: String): T? =
+    IntentCompat.getParcelableExtra(this, key, T::class.java)
+
+inline fun <reified T : Serializable> Intent.getSerializableExtraCompat(key: String): T? = when {
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> getSerializableExtra(key, T::class.java)
+    else -> @Suppress("DEPRECATION") getSerializableExtra(key) as? T?
+}
+
+fun OnBackPressedDispatcher.bubbleOnBackPressed(callback: OnBackPressedCallback) {
+    callback.isEnabled = false
+    onBackPressed()
+    callback.isEnabled = true
+}
+
+fun ComponentActivity.addOnBackPressedCallback(owner: LifecycleOwner? = this, callback: OnBackPressedCallback.() -> Boolean): OnBackPressedCallback = onBackPressedDispatcher.addCallback(owner) {
+    if (callback(this)) return@addCallback
+    onBackPressedDispatcher.bubbleOnBackPressed(this)
+}
+
+fun LifecycleOwner.launchWhenCreated(block: suspend CoroutineScope.() -> Unit): Job = lifecycleScope.launch {
+    repeatOnLifecycle(Lifecycle.State.CREATED) { block() }
 }

@@ -14,10 +14,21 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
-import androidx.lifecycle.*
-import androidx.paging.*
+import androidx.lifecycle.AbstractSavedStateViewModelFactory
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.asFlow
+import androidx.lifecycle.viewModelScope
+import androidx.paging.LoadState
+import androidx.paging.Pager
+import androidx.paging.PagingConfig
+import androidx.paging.PagingDataAdapter
+import androidx.paging.PagingSource
+import androidx.paging.PagingState
+import androidx.paging.cachedIn
 import androidx.recyclerview.widget.RecyclerView
 import androidx.savedstate.SavedStateRegistryOwner
+import com.bumptech.glide.Glide
 import com.github.yueeng.moebooru.databinding.FragmentSimilarBinding
 import com.github.yueeng.moebooru.databinding.ImageItemBinding
 import kotlinx.coroutines.Dispatchers
@@ -72,14 +83,14 @@ class SimilarFragment : Fragment() {
     private val adapter = SimilarAdapter()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        lifecycleScope.launchWhenCreated {
+        launchWhenCreated {
             if (arguments?.getString("action") != Intent.ACTION_SEND) return@launchWhenCreated
             if (arguments?.containsKey("url") == true) return@launchWhenCreated
-            val image: Uri = arguments?.getParcelable(Intent.EXTRA_STREAM) ?: return@launchWhenCreated
+            val image: Uri = arguments?.getParcelableCompat(Intent.EXTRA_STREAM) ?: return@launchWhenCreated
             runCatching {
                 requireContext().contentResolver.openInputStream(image).use {
                     val base64 = withContext(Dispatchers.IO) {
-                        val bitmap = GlideApp.with(this@SimilarFragment).asBitmap()
+                        val bitmap = Glide.with(this@SimilarFragment).asBitmap()
                             .load(image).submit(150, 150).get()
                         ByteArrayOutputStream().use { stream ->
                             bitmap.compress(Bitmap.CompressFormat.JPEG, 70, stream)
@@ -97,16 +108,16 @@ class SimilarFragment : Fragment() {
         FragmentSimilarBinding.inflate(inflater, container, false).also { binding ->
             (requireActivity() as AppCompatActivity).setSupportActionBar(binding.toolbar)
             binding.recycler.adapter = adapter
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 model.posts.collectLatest { adapter.submitData(it) }
             }
             binding.swipe.setOnRefreshListener { adapter.refresh() }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 adapter.loadStateFlow.collectLatest {
                     binding.swipe.isRefreshing = it.refresh is LoadState.Loading
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 MoeSettings.safe.asFlow().drop(1).distinctUntilChanged().collectLatest {
                     adapter.refresh()
                 }
@@ -122,7 +133,7 @@ class SimilarFragment : Fragment() {
         fun bind(item: JImageItem) {
             val url = URL(URL(moeUrl), item.preview_url).toString()
             progress.postValue(url)
-            GlideApp.with(binding.image1).load(url).placeholder(R.mipmap.ic_launcher_foreground)
+            Glide.with(binding.image1).load(url).placeholder(R.mipmap.ic_launcher_foreground)
                 .onComplete { _, _, _, _ -> progress.postValue(""); false }
                 .into(binding.image1)
             binding.text1.text = when (item.service) {
@@ -150,6 +161,7 @@ class SimilarFragment : Fragment() {
                                 .putExtra("query", Q().id(item.id)).putExtra("index", 0)
                             requireActivity().startActivity(intent, options.toBundle())
                         }
+
                         else -> requireContext().openWeb(item.url)
                     }
                 }

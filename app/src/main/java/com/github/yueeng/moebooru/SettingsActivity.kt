@@ -2,15 +2,28 @@
 
 package com.github.yueeng.moebooru
 
+import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.Menu
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.edit
-import androidx.lifecycle.*
-import androidx.preference.*
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.MediatorLiveData
+import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.lifecycle.asFlow
+import androidx.preference.EditTextPreference
+import androidx.preference.Preference
+import androidx.preference.PreferenceFragmentCompat
+import androidx.preference.PreferenceManager
+import androidx.preference.SeekBarPreference
 import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -32,14 +45,14 @@ class SettingsFragment : PreferenceFragmentCompat() {
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         setPreferencesFromResource(R.xml.preferences, rootKey)
         findPreference<SeekBarPreference>("app.cache_size")?.let { seek ->
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 MoeSettings.cache.asFlow().collectLatest {
                     seek.summary = (it * (1L shl 20)).sizeString()
                 }
             }
         }
         val address = findPreference<EditTextPreference>("app.host_ip_address")
-        lifecycleScope.launchWhenCreated {
+        launchWhenCreated {
             MoeSettings.host.asFlow().collectLatest {
                 address?.isVisible = it
             }
@@ -61,6 +74,37 @@ class SettingsFragment : PreferenceFragmentCompat() {
         }
         findPreference<Preference>("about")?.let {
             it.summary = getString(R.string.app_version, getString(R.string.app_name), BuildConfig.VERSION_NAME, BuildConfig.BUILD_TIME)
+            it.setOnPreferenceClickListener {
+                requireContext().startActivity(Intent(requireContext(), CrashActivity::class.java))
+                true
+            }
+        }
+        findPreference<Preference>("notification")?.let {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                it.isVisible = false
+                return@let
+            }
+            val manager = NotificationManagerCompat.from(requireContext())
+            val channel = manager.getNotificationChannel(moeHost)
+            if (manager.areNotificationsEnabled() && (channel?.importance != NotificationManager.IMPORTANCE_NONE)) {
+                it.isVisible = false
+                return@let
+            }
+            it.setOnPreferenceClickListener {
+                MoeSettings.checkNotification.setValueToPreferences(true)
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return@setOnPreferenceClickListener true
+                if (!manager.areNotificationsEnabled()) {
+                    startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                        putExtra(Settings.EXTRA_APP_PACKAGE, requireContext().packageName)
+                    })
+                } else if (channel?.importance == NotificationManager.IMPORTANCE_NONE) {
+                    startActivity(Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                        putExtra(Settings.EXTRA_APP_PACKAGE, requireContext().packageName)
+                        putExtra(Settings.EXTRA_CHANNEL_ID, channel.id)
+                    })
+                }
+                true
+            }
         }
     }
 }
@@ -81,6 +125,8 @@ object MoeSettings {
     private const val KEY_HOST_IP = "app.host_ip"
     private const val KEY_HOST_IP_ADDRESS = "app.host_ip_address"
     private const val KEY_API_KEY = "app.api_key"
+    private const val KEY_CHECK_NOTIFICATION = "app.check_notification"
+    private const val KEY_UPDATE_VERSION = "app.update_version"
 
     val recreate = MutableLiveData(Unit)
     val animation = preferences.stringLiveData(KEY_ANIMATION, "default")
@@ -96,6 +142,7 @@ object MoeSettings {
                 AppCompatDelegate.MODE_NIGHT_NO,
                 AppCompatDelegate.MODE_NIGHT_YES,
                 AppCompatDelegate.MODE_NIGHT_AUTO_BATTERY -> v
+
                 else -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
             }
         }
@@ -117,13 +164,16 @@ object MoeSettings {
         preferences.edit { putString(KEY_API_KEY, it) }
     }
 
+    val checkNotification = preferences.booleanLiveData(KEY_CHECK_NOTIFICATION, true)
+    val updateVersion = preferences.stringLiveData(KEY_UPDATE_VERSION, null)
+
     init {
-        ProcessLifecycleOwner.get().lifecycleScope.launchWhenCreated {
+        ProcessLifecycleOwner.get().launchWhenCreated {
             animation.asFlow().distinctUntilChanged().drop(1).collectLatest {
                 recreate.postValue(Unit)
             }
         }
-        ProcessLifecycleOwner.get().lifecycleScope.launchWhenCreated {
+        ProcessLifecycleOwner.get().launchWhenCreated {
             daynight.asFlow().distinctUntilChanged().drop(1).collectLatest {
                 AppCompatDelegate.setDefaultNightMode(it)
                 recreate.postValue(Unit)

@@ -26,7 +26,11 @@ import androidx.core.view.isInvisible
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
-import androidx.lifecycle.*
+import androidx.lifecycle.AbstractSavedStateViewModelFactory
+import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.asFlow
 import androidx.paging.LoadState
 import androidx.paging.PagingDataAdapter
 import androidx.palette.graphics.Palette
@@ -38,6 +42,7 @@ import androidx.transition.Explode
 import androidx.transition.TransitionManager
 import androidx.viewpager2.widget.ViewPager2
 import com.alexvasilkov.gestures.GestureController
+import com.bumptech.glide.Glide
 import com.bumptech.glide.Priority
 import com.bumptech.glide.load.resource.drawable.DrawableTransitionOptions
 import com.github.yueeng.moebooru.MoePermission.Companion.checkPermissions
@@ -50,11 +55,16 @@ import com.google.android.flexbox.FlexboxLayoutManager
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import jp.wasabeef.glide.transformations.BlurTransformation
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.distinctUntilChangedBy
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.withContext
-import java.util.*
+import java.util.Locale
 import kotlin.math.max
 
 
@@ -74,61 +84,61 @@ class PreviewActivity : MoeActivity(R.layout.activity_container) {
             beginTransaction().replace(R.id.container, fragment).commit()
         }
     }
-
-    override fun onBackPressed() {
-        if ((supportFragmentManager.findFragmentById(R.id.container) as? PreviewFragment)?.onBackPressed() == true) return
-        super.onBackPressed()
-    }
 }
 
-class PreviewViewModel(handle: SavedStateHandle, args: Bundle?) : ViewModel() {
-    val index = handle.getLiveData("index", args?.getInt("index", -1) ?: -1)
+class PreviewViewModel(handle: SavedStateHandle) : ViewModel() {
+    val index = handle.getLiveData("index", -1)
 }
 
-class PreviewViewModelFactory(owner: SavedStateRegistryOwner, private val defaultArgs: Bundle?) : AbstractSavedStateViewModelFactory(owner, defaultArgs) {
+class PreviewViewModelFactory(owner: SavedStateRegistryOwner, defaultArgs: Bundle?) : AbstractSavedStateViewModelFactory(owner, defaultArgs) {
     @Suppress("UNCHECKED_CAST")
-    override fun <T : ViewModel> create(key: String, modelClass: Class<T>, handle: SavedStateHandle): T = PreviewViewModel(handle, defaultArgs) as T
+    override fun <T : ViewModel> create(key: String, modelClass: Class<T>, handle: SavedStateHandle): T = PreviewViewModel(handle) as T
 }
 
 class PreviewFragment : Fragment(), SavedFragment.Queryable {
     private val previewModel: PreviewViewModel by viewModels { PreviewViewModelFactory(this, arguments) }
-    private val query by lazy { arguments?.getParcelable("query") ?: Q() }
+    private val query by lazy { arguments?.getParcelableCompat("query") ?: Q() }
     private val binding by lazy { FragmentPreviewBinding.bind(requireView()) }
     private val adapter by lazy { ImageAdapter() }
     private val tagAdapter by lazy { TagAdapter() }
     private val model: ImageViewModel by sharedViewModels({ query.toString() }) { ImageViewModelFactory(this, arguments) }
 
-    @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
+    @OptIn(FlowPreview::class)
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View =
         FragmentPreviewBinding.inflate(inflater, container, false).also { binding ->
             (activity as AppCompatActivity).setSupportActionBar(binding.toolbar)
             activity?.title = query.toString().toTitleCase()
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 model.posts.collectLatest { adapter.submitData(it) }
             }
             binding.pager.offscreenPageLimit = 1
             binding.pager.adapter = adapter
+            var first = true
             binding.pager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
-                override fun onPageSelected(position: Int) = previewModel.index.postValue(position)
+                override fun onPageSelected(position: Int) {
+                    if (first) return
+                    previewModel.index.postValue(position)
+                }
             })
-            lifecycleScope.launchWhenCreated {
-                adapter.loadStateFlow
-                    .distinctUntilChangedBy { it.refresh }
+            launchWhenCreated {
+                adapter.loadStateFlow.distinctUntilChangedBy { it.refresh }
                     .filter { it.refresh is LoadState.NotLoading }
                     .collect {
                         val index = when (previewModel.index.value) {
                             -1 -> arguments?.getInt("id")?.let { id ->
                                 adapter.snapshot().indexOfFirst { it?.id == id }
                             }?.also(previewModel.index::postValue)
+
                             else -> null
                         } ?: previewModel.index.value!!
                         if (index >= 0) binding.pager.post {
                             binding.pager.setCurrentItem(index, false)
                         }
+                        first = false
                     }
             }
-            lifecycleScope.launchWhenCreated {
-                previewModel.index.asFlow().mapNotNull { adapter.peekSafe(it) }.collectLatest { item ->
+            launchWhenCreated {
+                previewModel.index.asFlow().distinctUntilChanged().mapNotNull { adapter.peekSafe(it) }.collectLatest { item ->
                     ProgressBehavior.on(item.sample_url).onCompletion {
                         binding.progress1.isInvisible = true
                         binding.progress1.progress = 0
@@ -150,11 +160,11 @@ class PreviewFragment : Fragment(), SavedFragment.Queryable {
                 }
             }
             val background = MutableLiveData<Bitmap?>()
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 var anim: ObjectAnimator? = null
                 fun trans(to: Int) {
                     val from = (binding.root.background as? ColorDrawable)?.color ?: 0
-                    val target = if (to != 0) to else requireActivity().theme.obtainStyledAttributes(intArrayOf(R.attr.colorSurface)).use {
+                    val target = if (to != 0) to else requireActivity().theme.obtainStyledAttributes(intArrayOf(com.google.android.material.R.attr.colorSurface)).use {
                         it.getColor(0, Color.WHITE)
                     }
                     anim = ObjectAnimator.ofObject(binding.root, "backgroundColor", ArgbEvaluator(), from, target).apply {
@@ -170,7 +180,7 @@ class PreviewFragment : Fragment(), SavedFragment.Queryable {
                     }
                     background.asFlow().onCompletion { anim?.cancel() }.collectLatest collect@{ bitmap ->
                         if (bitmap == null) return@collect
-                        GlideApp.with(binding.background)
+                        Glide.with(binding.background)
                             .load(bitmap)
                             .transform(BlurTransformation(5))
                             .transition(DrawableTransitionOptions.withCrossFade())
@@ -185,26 +195,26 @@ class PreviewFragment : Fragment(), SavedFragment.Queryable {
             }
             val bottomSheetBehavior = BottomSheetBehavior.from(binding.sliding)
             val tagItem = MutableLiveData<JImageItem>()
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 tagItem.asFlow().filter { bottomSheetBehavior.isOpen }.distinctUntilChanged().collectLatest {
                     tagAdapter.submit(it)
                     TransitionManager.beginDelayedTransition(binding.sliding, ChangeBounds())
                 }
             }
-            lifecycleScope.launchWhenCreated {
-                previewModel.index.asFlow().mapNotNull { adapter.peekSafe(it) }.collectLatest { item ->
-                    GlideApp.with(binding.button7).load(OAuth.face(item.creator_id))
+            launchWhenCreated {
+                previewModel.index.asFlow().distinctUntilChanged().mapNotNull { adapter.peekSafe(it) }.collectLatest { item ->
+                    Glide.with(binding.button7).load(OAuth.face(item.creator_id))
                         .placeholder(R.mipmap.ic_launcher)
                         .transition(DrawableTransitionOptions.withCrossFade())
                         .into(binding.button7)
-                    GlideApp.with(this@PreviewFragment).asBitmap().load(item.preview_url)
+                    Glide.with(this@PreviewFragment).asBitmap().load(item.preview_url)
                         .into(SimpleCustomTarget<Bitmap> { background.postValue(it) })
                     tagItem.postValue(item)
                 }
             }
             (binding.recycler.layoutManager as? FlexboxLayoutManager)?.flexDirection = FlexDirection.ROW
             binding.recycler.adapter = tagAdapter
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 adapter.loadStateFlow.collectLatest {
                     binding.busy.isVisible = it.refresh is LoadState.Loading
                 }
@@ -245,7 +255,7 @@ class PreviewFragment : Fragment(), SavedFragment.Queryable {
                     return@setOnClickListener
                 }
                 val item = adapter.peekSafe(binding.pager.currentItem) ?: return@setOnClickListener
-                GlideApp.with(it).asFile().load(item.sample_url).into(SimpleCustomTarget { file ->
+                Glide.with(it).asFile().load(item.sample_url).into(SimpleCustomTarget { file ->
                     startActivity(
                         Intent(requireContext(), CropActivity::class.java)
                             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -276,14 +286,14 @@ class PreviewFragment : Fragment(), SavedFragment.Queryable {
                 val options = ActivityOptions.makeSceneTransitionAnimation(requireActivity(), it, "shared_element_container")
                 startActivity(Intent(requireContext(), UserActivity::class.java).putExtras(bundleOf("user" to model.creator_id, "name" to model.author)), options.toBundle())
             }
+            requireActivity().addOnBackPressedCallback(viewLifecycleOwner) {
+                if (bottomSheetBehavior.isOpen) {
+                    bottomSheetBehavior.close()
+                    return@addOnBackPressedCallback true
+                }
+                false
+            }
         }.root
-
-    fun onBackPressed(): Boolean {
-        val bottomSheetBehavior = BottomSheetBehavior.from(binding.sliding)
-        val open = bottomSheetBehavior.isOpen
-        if (open) bottomSheetBehavior.close()
-        return open
-    }
 
     inner class ImageHolder(private val binding: PreviewItemBinding) : RecyclerView.ViewHolder(binding.root) {
         init {
@@ -301,9 +311,11 @@ class PreviewFragment : Fragment(), SavedFragment.Queryable {
                         event.x < width * .35 -> (pager.pager.currentItem - 1).takeIf { it >= 0 }?.let {
                             pager.pager.setCurrentItem(it, true)
                         }
+
                         event.x > width * .65 -> (pager.pager.currentItem + 1).takeIf { it < fragment.adapter.itemCount }?.let {
                             pager.pager.setCurrentItem(it, true)
                         }
+
                         else -> {
                             TransitionManager.beginDelayedTransition(pager.root, Explode())
                             pager.toolbar.isVisible = pager.toolbar.isGone
@@ -317,7 +329,6 @@ class PreviewFragment : Fragment(), SavedFragment.Queryable {
 
         private val progress = ProgressBehavior.progress(viewLifecycleOwner, binding.progress)
 
-        @OptIn(FlowPreview::class)
         fun bind(item: JImageItem) {
             val priority = when {
                 this@PreviewFragment.binding.pager.currentItem == bindingAdapterPosition -> Priority.IMMEDIATE
@@ -325,10 +336,10 @@ class PreviewFragment : Fragment(), SavedFragment.Queryable {
                 else -> Priority.NORMAL
             }
             progress.postValue(item.sample_url)
-            GlideApp.with(binding.image1).load(item.sample_url)
+            Glide.with(binding.image1).load(item.sample_url)
                 .priority(priority)
                 .placeholder(R.mipmap.ic_launcher_foreground)
-                .thumbnail(GlideApp.with(binding.image1).load(item.preview_url).transition(DrawableTransitionOptions.withCrossFade()).onResourceReady { _, _, _, _, _ ->
+                .thumbnail(Glide.with(binding.image1).load(item.preview_url).transition(DrawableTransitionOptions.withCrossFade()).onResourceReady { _, _, _, _, _ ->
                     binding.image1.setImageDrawable(null)
                     false
                 })
@@ -372,6 +383,7 @@ class PreviewFragment : Fragment(), SavedFragment.Queryable {
                             val options = ActivityOptions.makeSceneTransitionAnimation(activity, it, "shared_element_container")
                             activity.startActivity(Intent(activity, SimilarActivity::class.java).putExtra("id", tag.tag.toInt()), options.toBundle())
                         }
+
                         else -> if (tag.tag.isNotEmpty()) {
                             val options = ActivityOptions.makeSceneTransitionAnimation(activity, it, "shared_element_container")
                             val intent = Intent(activity, ListActivity::class.java).putExtra("query", Q(tag.tag))
@@ -396,7 +408,7 @@ class PreviewFragment : Fragment(), SavedFragment.Queryable {
 //            if (currentList.size == 0) submitList(listOf(Tag(Tag.TYPE_UNKNOWN, "Waiting...", "")))
             val tags = withContext(Dispatchers.Default) {
                 val common = mutableListOf(
-                    Tag(Tag.TYPE_USER, item.author.toTitleCase(), "user:${item.author}"),
+                    Tag(Tag.TYPE_USER, item.author.toTitleCase(), "user:${Uri.encode(item.author)}"),
                     Tag(Tag.TYPE_SIZE, "${item.width}x${item.height}", "width:${item.width} height:${item.height}"),
                     Tag(Tag.TYPE_SIZE, item.resolution.title, Q().mpixels(item.resolution.mpixels, Q.Value.Op.ge).toString())
                 )
@@ -418,7 +430,7 @@ class PreviewFragment : Fragment(), SavedFragment.Queryable {
                         common.add(Tag(Tag.TYPE_DOWNLOAD, name, i.first))
                     }
                 val tags = item.tags.split(' ').map { Q.summaryMap[it] to it }
-                    .map { Tag(it.first ?: Tag.TYPE_UNKNOWN, it.second.toTitleCase(), it.second) }
+                    .map { Tag(it.first ?: Tag.TYPE_UNKNOWN, it.second.toTitleCase(), Uri.encode(it.second)) }
                 (common + tags).sortedWith(compareBy({ -it.type }, Tag::name, Tag::tag))
             }
             submitList(tags)

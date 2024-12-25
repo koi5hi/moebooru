@@ -48,7 +48,7 @@ class QueryActivity : MoeActivity(R.layout.activity_container) {
 }
 
 class QueryViewModel(handle: SavedStateHandle, args: Bundle?) : ViewModel() {
-    val query = handle.getLiveData("query", args?.getParcelable("query") ?: Q())
+    val query = handle.getLiveData("query", args?.getParcelableCompat("query") ?: Q())
     val id = handle.getLiveData("id", args?.getLong("id"))
     val name = handle.getLiveData<String>("name")
 }
@@ -68,10 +68,10 @@ class QueryFragment : Fragment() {
         FragmentQueryBinding.inflate(inflater, container, false).also { binding ->
             (requireActivity() as AppCompatActivity).setSupportActionBar(binding.toolbar)
             requireActivity().title = getString(R.string.app_name)
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 model.name.asFlow().mapNotNull { it }.collectLatest { requireActivity().title = it }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 model.id.asFlow().mapNotNull { it }.filter { it != 0L }.collectLatest { id ->
                     Db.tags.tag(id)?.let { model.name.postValue(it.name) }
                 }
@@ -82,6 +82,7 @@ class QueryFragment : Fragment() {
                         val options = requireView().findViewById<View>(item.itemId)?.let { ActivityOptions.makeSceneTransitionAnimation(requireActivity(), it, "shared_element_container") }
                         startActivity(Intent(requireContext(), ListActivity::class.java).putExtra("query", model.query.value), options?.toBundle())
                     }
+
                     R.id.save -> true.also { save() }
                     else -> false
                 }
@@ -106,7 +107,7 @@ class QueryFragment : Fragment() {
             }
         }.root
 
-    private fun save() = lifecycleScope.launchWhenCreated {
+    private fun save() = launchWhenCreated {
         val tag = model.query.value?.toString() ?: return@launchWhenCreated
         val view = QuerySavedBinding.inflate(layoutInflater)
         val saved = model.id.value?.takeIf { it != 0L }?.let { Db.tags.tag(it) }
@@ -200,9 +201,11 @@ class QueryFragment : Fragment() {
                         (v as TextView).text = Tag.string(any as Int)
                         v.setTextColor(Tag.color(any))
                     }
+
                     R.id.text2, R.id.text3 -> false.also {
                         v.isVisible = data.isNotEmpty()
                     }
+
                     else -> false
                 }
             }
@@ -265,7 +268,7 @@ class QueryFragment : Fragment() {
             .show {
                 positiveButton.setOnClickListener {
                     val chip = view.chipGroup.checkedChip
-                    val op = Q.Value.Op.values().firstOrNull { it.value == chip?.tag }
+                    val op = Q.Value.Op.entries.firstOrNull { it.value == chip?.tag }
                     if (op == null) {
                         Snackbar.make(view.root, R.string.query_empty, Snackbar.LENGTH_SHORT)
                             .setAction(R.string.app_ok) {}
@@ -308,10 +311,9 @@ class QueryFragment : Fragment() {
         view.chipGroup.setOnCheckedStateChangeListener { _, _ ->
             TransitionManager.beginDelayedTransition(view.root)
             view.input2.isVisible = view.chipGroup.checkedChip?.tag == Q.Value.Op.bt.value
-            view.pick2.isVisible = view.chipGroup.checkedChip?.tag == Q.Value.Op.bt.value
         }
-        listOf(view.pick1 to view.edit1, view.pick2 to view.edit2).forEach { pe ->
-            pe.first.setOnClickListener {
+        listOf(view.input1 to view.edit1, view.input2 to view.edit2).forEach { pe ->
+            pe.first.setEndIconOnClickListener {
                 val current = Q.formatter.tryParse(pe.second.text.toString()) ?: Date()
                 val pick = DatePicker(requireContext()).apply {
                     minDate = moeCreateTime.milliseconds
@@ -325,18 +327,20 @@ class QueryFragment : Fragment() {
                     .setNegativeButton(R.string.app_cancel, null)
                     .create().show()
             }
-        }
-        view.edit1.addTextChangedListener {
-            view.input1.isErrorEnabled = Q.formatter.tryParse(it.toString()) == null
-        }
-        view.edit2.addTextChangedListener {
-            view.input1.isErrorEnabled = Q.formatter.tryParse(it.toString()) == null
+
+            pe.second.addTextChangedListener {
+                pe.first.isErrorEnabled = false
+            }
+            pe.second.setOnFocusChangeListener { _, _ ->
+                pe.first.isErrorEnabled = false
+            }
         }
         @Suppress("UNCHECKED_CAST")
-        val default = data[key] as? Q.Value<Date>
+        val default = data[key] as? Q.Value<Q.ValueDate>
         if (default != null) {
-            view.edit1.setText(default.v1string)
-            view.edit2.setText(default.v2string)
+            view.edit1.setText(default.v1.toQuery())
+            view.edit2.setText(default.v2?.toQuery())
+            view.check1.isChecked = default.v1.cd != null
             view.chipGroup.findViewWithTag<Chip>(default.op.value)?.isChecked = true
         } else {
             view.chipGroup.children.mapNotNull { it as? Chip }.firstOrNull()?.isChecked = true
@@ -351,7 +355,7 @@ class QueryFragment : Fragment() {
             .show {
                 positiveButton.setOnClickListener {
                     val chip = view.chipGroup.checkedChip
-                    val op = Q.Value.Op.values().firstOrNull { it.value == chip?.tag }
+                    val op = Q.Value.Op.entries.firstOrNull { it.value == chip?.tag }
                     if (op == null) {
                         Snackbar.make(view.root, R.string.query_empty, Snackbar.LENGTH_SHORT)
                             .setAction(R.string.app_ok) {}
@@ -370,7 +374,12 @@ class QueryFragment : Fragment() {
                         view.input2.error = getString(R.string.query_empty)
                         return@setOnClickListener
                     }
-                    val value = Q.Value(op, v1, v2)
+                    val cd = view.check1.isChecked
+                    val value = Q.Value(
+                        op,
+                        Q.ValueDate(if (cd) (calendar() - v1.toCalendar()).days else null, v1),
+                        v2?.let { Q.ValueDate(if (cd) (calendar() - v2.toCalendar()).days else null, v2) }
+                    )
                     adapter.add(key, value)
                     dismiss()
                 }
@@ -406,7 +415,7 @@ class QueryFragment : Fragment() {
             .show {
                 positiveButton.setOnClickListener {
                     val chip = view.chipGroup.checkedChip
-                    val op = Q.Value.Op.values().firstOrNull { it.value == chip?.tag }
+                    val op = Q.Value.Op.entries.firstOrNull { it.value == chip?.tag }
                     if (op == null) {
                         Snackbar.make(view.root, R.string.query_empty, Snackbar.LENGTH_SHORT)
                             .setAction(R.string.app_ok) {}
@@ -484,8 +493,8 @@ class QueryFragment : Fragment() {
                     }
                     val selected = data[adapter.checked]["n"]
                     val choice = when (key) {
-                        "order" -> Q.Order.values().first { it.value == selected }
-                        "rating" -> Q.Rating.values().first { it.value == selected }
+                        "order" -> Q.Order.entries.first { it.value == selected }
+                        "rating" -> Q.Rating.entries.first { it.value == selected }
                         else -> null
                     }
                     this@QueryFragment.adapter.add(key, choice!!)
@@ -512,6 +521,7 @@ class QueryFragment : Fragment() {
             }
         }
 
+        @SuppressLint("SetTextI18n")
         override fun onBindViewHolder(holder: QueryHolder, position: Int) {
             val item = currentList[position]
             holder.binding.text1.text = item.first

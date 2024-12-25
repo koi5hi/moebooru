@@ -8,8 +8,17 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
-import androidx.lifecycle.*
-import androidx.paging.*
+import androidx.lifecycle.AbstractSavedStateViewModelFactory
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.asFlow
+import androidx.lifecycle.viewModelScope
+import androidx.paging.LoadState
+import androidx.paging.Pager
+import androidx.paging.PagingConfig
+import androidx.paging.PagingDataAdapter
+import androidx.paging.cachedIn
+import androidx.paging.insertHeaderItem
 import androidx.recyclerview.widget.ConcatAdapter
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.RecyclerView
@@ -22,7 +31,7 @@ import com.google.android.flexbox.FlexDirection
 import com.google.android.flexbox.FlexboxLayoutManager
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.map
-import java.util.*
+import java.util.Date
 import kotlin.math.min
 
 
@@ -52,10 +61,11 @@ class SavedFragment : Fragment() {
                     R.id.edit -> true.also {
                         viewModel.edit.postValue(!(viewModel.edit.value ?: false))
                     }
+
                     else -> false
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 viewModel.edit.asFlow().collectLatest {
                     binding.toolbar.menu.findItem(R.id.edit).setIcon(if (it) R.drawable.ic_done else R.drawable.ic_edit)
                     pinAdapter.notifyItemRangeChanged(0, pinAdapter.itemCount)
@@ -66,22 +76,22 @@ class SavedFragment : Fragment() {
                 pinAdapter.refresh()
                 adapter.refresh()
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 pinAdapter.loadStateFlow.collectLatest {
                     binding.swipe.isRefreshing = it.refresh is LoadState.Loading
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 adapter.loadStateFlow.collectLatest {
                     binding.swipe.isRefreshing = it.refresh is LoadState.Loading
                 }
             }
             (binding.recycler.layoutManager as? FlexboxLayoutManager)?.flexDirection = FlexDirection.ROW
             binding.recycler.adapter = ConcatAdapter(pinAdapter, adapter)
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 viewModel.pinned.collectLatest { pinAdapter.submitData(it) }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 viewModel.saved.collectLatest { adapter.submitData(it) }
             }
             ItemTouchHelper(object : ItemTouchHelper.Callback() {
@@ -94,7 +104,7 @@ class SavedFragment : Fragment() {
 
                 override fun onMove(view: RecyclerView, holder: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean =
                     (holder as? SavedHolder)?.tag?.takeIf { it.pin }?.let {
-                        lifecycleScope.launchWhenCreated {
+                        launchWhenCreated {
                             Db.db.withTransaction {
                                 pinAdapter.snapshot().toMutableList().apply {
                                     removeAt(holder.bindingAdapterPosition)
@@ -109,7 +119,7 @@ class SavedFragment : Fragment() {
 
                 override fun onSwiped(holder: RecyclerView.ViewHolder, direction: Int) {
                     (holder as? SavedHolder)?.tag?.takeIf { it.id != 0L }?.let {
-                        lifecycleScope.launchWhenCreated {
+                        launchWhenCreated {
                             Db.db.withTransaction {
                                 Db.tags.deleteTag(it)
                                 Db.tags.deleteOrder(it.tag)
@@ -146,7 +156,7 @@ class SavedFragment : Fragment() {
                 }
             }
             binding.button1.setOnClickListener {
-                lifecycleScope.launchWhenCreated {
+                launchWhenCreated {
                     tag.pin = !tag.pin
                     tag.create = Date()
                     Db.db.withTransaction {

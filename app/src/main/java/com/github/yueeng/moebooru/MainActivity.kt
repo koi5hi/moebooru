@@ -25,6 +25,8 @@ import androidx.recyclerview.widget.StaggeredGridLayoutManager
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.transition.TransitionManager
 import androidx.viewpager2.adapter.FragmentStateAdapter
+import androidx.viewpager2.widget.ViewPager2
+import com.bumptech.glide.Glide
 import com.bumptech.glide.load.resource.drawable.DrawableTransitionOptions
 import com.github.yueeng.moebooru.Save.save
 import com.github.yueeng.moebooru.databinding.*
@@ -34,10 +36,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.tabs.TabLayoutMediator
 import com.google.android.material.transition.MaterialContainerTransform
-import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlin.math.max
 import kotlin.math.min
@@ -53,7 +52,7 @@ class MainActivity : MoeActivity(R.layout.activity_main) {
     }
 }
 
-class MainFragment : Fragment(), SavedFragment.Queryable, IOnBackPressed, MenuProvider {
+class MainFragment : Fragment(), SavedFragment.Queryable, MenuProvider {
     private val adapter by lazy { PagerAdapter(this) }
     private lateinit var binding: FragmentMainBinding
 
@@ -64,7 +63,14 @@ class MainFragment : Fragment(), SavedFragment.Queryable, IOnBackPressed, MenuPr
             (requireActivity() as AppCompatActivity).setSupportActionBar(binding.toolbar)
             binding.pager.adapter = adapter
             TabLayoutMediator(binding.tab, binding.pager) { tab, position -> tab.text = adapter.data[position].first }.attach()
-            lifecycleScope.launchWhenCreated {
+            binding.pager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
+                override fun onPageSelected(position: Int) {
+                    val current = adapter.data[binding.pager.currentItem]
+                    binding.menu.getHeaderView(0)?.findViewById<TextView>(R.id.text1)?.text = current.second.keyword?.toTitleCase()
+                    binding.menu.getHeaderView(0).isVisible = current.second.keyword?.isNotEmpty() == true
+                }
+            })
+            launchWhenCreated {
                 Db.tags.tagsWithIndex(true).collectLatest { tags ->
                     adapter.submitList(tags.map { it.name to Q(it.tag) })
                 }
@@ -75,11 +81,18 @@ class MainFragment : Fragment(), SavedFragment.Queryable, IOnBackPressed, MenuPr
                     R.id.week -> "week"
                     R.id.month -> "month"
                     R.id.year -> "year"
+                    R.id.all -> "all"
                     else -> return@setNavigationItemSelectedListener false
                 }
                 val view = binding.menu.findViewById<View>(it.itemId)
                 val options = ActivityOptions.makeSceneTransitionAnimation(requireActivity(), view, "shared_element_container")
-                startActivity(Intent(requireContext(), PopularActivity::class.java).putExtra("type", tag), options.toBundle())
+                val query = adapter.data[binding.pager.currentItem].second
+                val intent = if (tag == "all") {
+                    Intent(requireContext(), ListActivity::class.java).putExtra("query", Q(query.keyword).order(Q.Order.score))
+                } else {
+                    Intent(requireContext(), PopularActivity::class.java).putExtra("type", tag).putExtra("key", query.keyword)
+                }
+                startActivity(intent, options.toBundle())
                 true
             }
             binding.scram.setOnClickListener { binding.fab.performClick() }
@@ -96,13 +109,18 @@ class MainFragment : Fragment(), SavedFragment.Queryable, IOnBackPressed, MenuPr
                 binding.fab.isVisible = !visible
                 binding.menu.isVisible = visible
             }
+            requireActivity().addOnBackPressedCallback(viewLifecycleOwner) {
+                if (binding.menu.isVisible) {
+                    binding.fab.performClick()
+                    return@addOnBackPressedCallback true
+                }
+                false
+            }
         }.root
-
-    override fun onBackPressed(): Boolean = if (binding.menu.isVisible) true.also { binding.fab.performClick() } else false
 
     class PagerAdapter(fragment: Fragment) : FragmentStateAdapter(fragment) {
         private val differ = AsyncListDiffer<Pair<String, Q>>(this, diffCallback { old, new -> old == new }).apply {
-            submitList(listOf("Popular" to Q().order(Q.Order.score).date(calendar().day(-1, true).time, Q.Value.Op.ge)))
+            submitList(listOf("Popular" to Q().order(Q.Order.score).date(1, Q.Value.Op.ge)))
         }
         val data get():List<Pair<String, Q>> = differ.currentList
         fun submitList(list: List<Pair<String, Q>>) = differ.submitList(listOf(data.first()) + list)
@@ -112,17 +130,15 @@ class MainFragment : Fragment(), SavedFragment.Queryable, IOnBackPressed, MenuPr
         override fun createFragment(position: Int): Fragment = ImageFragment().apply {
             arguments = bundleOf("query" to data[position].second, "name" to data[position].first)
             if (position != 0) return@apply
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 adapter.loadStateFlow.collectLatest {
                     if (it.refresh !is LoadState.Error) return@collectLatest
                     if (adapter.itemCount != 0) return@collectLatest
                     if (MoeSettings.host.value == true) return@collectLatest
-                    requireView().snack(R.string.settings_host_ip_on, Snackbar.LENGTH_LONG)
-                        .setAction(R.string.app_ok) {
-                            MoeSettings.host.setValueToPreferences(true)
-                            adapter.refresh()
-                        }
-                        .show()
+                    requireView().snack(R.string.settings_host_ip_on, Snackbar.LENGTH_LONG).setAction(R.string.app_ok) {
+                        MoeSettings.host.setValueToPreferences(true)
+                        adapter.refresh()
+                    }.show()
                 }
             }
         }
@@ -141,6 +157,7 @@ class MainFragment : Fragment(), SavedFragment.Queryable, IOnBackPressed, MenuPr
         R.id.column -> true.also {
             MoeSettings.column()
         }
+
         else -> false
     }
 
@@ -163,8 +180,8 @@ class ListActivity : MoeActivity(R.layout.activity_container) {
     }
 }
 
-class ListFragment : Fragment(), SavedFragment.Queryable, IOnBackPressed, MenuProvider {
-    private val query by lazy { arguments?.getParcelable<Q>("query") }
+class ListFragment : Fragment(), SavedFragment.Queryable, MenuProvider {
+    private val query by lazy { arguments?.getParcelableCompat<Q>("query") }
     private val artist = MutableLiveData<ItemArtist?>()
     private lateinit var binding: FragmentListBinding
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View =
@@ -183,12 +200,16 @@ class ListFragment : Fragment(), SavedFragment.Queryable, IOnBackPressed, MenuPr
                     R.id.week -> "week"
                     R.id.month -> "month"
                     R.id.year -> "year"
+                    R.id.all -> "all"
                     else -> return@setNavigationItemSelectedListener false
                 }
                 val view = binding.menu.findViewById<View>(it.itemId)
                 val options = ActivityOptions.makeSceneTransitionAnimation(requireActivity(), view, "shared_element_container")
-                val intent = Intent(requireContext(), PopularActivity::class.java).putExtra("type", tag)
-                query?.keyword?.takeIf { key -> key.isNotEmpty() }?.let { key -> intent.putExtra("key", key) }
+                val intent = if (tag == "all") {
+                    Intent(requireContext(), ListActivity::class.java).putExtra("query", Q(query?.keyword).order(Q.Order.score))
+                } else {
+                    Intent(requireContext(), PopularActivity::class.java).putExtra("type", tag).putExtra("key", query?.keyword)
+                }
                 startActivity(intent, options.toBundle())
                 true
             }
@@ -206,15 +227,22 @@ class ListFragment : Fragment(), SavedFragment.Queryable, IOnBackPressed, MenuPr
                 binding.fab.isVisible = !visible
                 binding.menu.isVisible = visible
             }
+            requireActivity().addOnBackPressedCallback(viewLifecycleOwner) {
+                if (binding.menu.isVisible) {
+                    binding.fab.performClick()
+                    return@addOnBackPressedCallback true
+                }
+                false
+            }
         }.root
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val name = arguments?.getString("artist") ?: return
-        lifecycleScope.launchWhenCreated {
+        launchWhenCreated {
             artist.postValue(Service.instance.artist(name).firstOrNull())
         }
-        lifecycleScope.launchWhenCreated {
+        launchWhenCreated {
             artist.asFlow().filter { it?.urls?.any() == true }.collectLatest {
                 requireActivity().invalidateOptionsMenu()
             }
@@ -225,8 +253,6 @@ class ListFragment : Fragment(), SavedFragment.Queryable, IOnBackPressed, MenuPr
         super.onStart()
         requireActivity().addMenuProvider(this, viewLifecycleOwner, Lifecycle.State.RESUMED)
     }
-
-    override fun onBackPressed(): Boolean = if (binding.menu.isVisible) true.also { binding.fab.performClick() } else false
 
     override fun onPrepareMenu(menu: Menu) {
         menu.findItem(R.id.artist)?.isVisible = artist.value?.urls?.any() == true
@@ -247,9 +273,11 @@ class ListFragment : Fragment(), SavedFragment.Queryable, IOnBackPressed, MenuPr
                 .setPositiveButton(R.string.app_ok, null)
                 .show()
         }
+
         R.id.column -> true.also {
             MoeSettings.column()
         }
+
         else -> false
     }
 
@@ -257,7 +285,7 @@ class ListFragment : Fragment(), SavedFragment.Queryable, IOnBackPressed, MenuPr
 }
 
 class ImageDataSource(private val query: Q? = Q(), private val begin: Int = 1, private val call: ((Int) -> Unit)? = null) : PagingSource<Int, JImageItem>() {
-    suspend fun children(q: Set<Q>, raw: List<JImageItem>, data: List<JImageItem> = raw): List<JImageItem> {
+    private suspend fun children(q: Set<Q>, raw: List<JImageItem>, data: List<JImageItem> = raw): List<JImageItem> {
         val children = raw.filter { it.has_children }.map { Q().parent(it.id) }
         val parent = raw.filter { it.parent_id != 0 }.filter { data.all { i -> i.id != it.parent_id } }.map { Q().id(it.parent_id) }
         val queries = (children + parent).subtract(q)
@@ -273,7 +301,7 @@ class ImageDataSource(private val query: Q? = Q(), private val begin: Int = 1, p
         val posts = if (query?.only("id", "parent") == true) children(setOf(Q(query)), raw) else raw
         call?.invoke(key)
         val prev = if (posts.isNotEmpty()) (key - 1).takeIf { it > 0 } else null
-        val next = if (posts.size == params.loadSize) key + (params.loadSize / ImageViewModel.pageSize) else null
+        val next = if (posts.size == params.loadSize) key + (params.loadSize / ImageViewModel.PAGE_SIZE) else null
         LoadResult.Page(posts, prev, next)
     } catch (e: Exception) {
         LoadResult.Error(e)
@@ -284,14 +312,14 @@ class ImageDataSource(private val query: Q? = Q(), private val begin: Int = 1, p
 
 class ImageViewModel(handle: SavedStateHandle, defaultArgs: Bundle?) : ViewModel() {
     companion object {
-        const val pageSize = 20
+        const val PAGE_SIZE = 20
     }
 
     val index = handle.getLiveData<Int>("index")
     val min = handle.getLiveData("min", 1)
     val max = handle.getLiveData<Int>("max")
-    val query = handle.getLiveData<Q?>("query", defaultArgs?.getParcelable("query"))
-    val posts = Pager(PagingConfig(pageSize, initialLoadSize = pageSize * 2)) {
+    val query = handle.getLiveData<Q?>("query", defaultArgs?.getParcelableCompat("query"))
+    val posts = Pager(PagingConfig(PAGE_SIZE, initialLoadSize = PAGE_SIZE * 2)) {
         max.postValue(0)
         ImageDataSource(query.value, min.value ?: 1) {
             min.postValue(min(it, min.value!!))
@@ -306,28 +334,28 @@ class ImageViewModelFactory(owner: SavedStateRegistryOwner, private val defaultA
 }
 
 class ImageFragment : Fragment() {
-    private val query by lazy { arguments?.getParcelable("query") ?: Q() }
+    private val query by lazy { arguments?.getParcelableCompat("query") ?: Q() }
     private val model: ImageViewModel by sharedViewModels({ query.toString() }) { ImageViewModelFactory(this, arguments) }
     private val offset = MutableLiveData<Int>()
     private val sum = MutableLiveData<Int>()
     val adapter by lazy { ImageAdapter() }
 
-    @OptIn(FlowPreview::class)
+    @OptIn(ExperimentalCoroutinesApi::class)
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View =
         FragmentImageBinding.inflate(inflater, container, false).also { binding ->
             adapter.stateRestorationPolicy = RecyclerView.Adapter.StateRestorationPolicy.PREVENT_WHEN_EMPTY
             binding.recycler.adapter = adapter.withLoadStateHeaderAndFooter(HeaderAdapter(adapter), FooterAdapter(adapter))
-            lifecycleScope.launchWhenCreated {
+            binding.swipe.setOnRefreshListener { adapter.refresh() }
+            launchWhenCreated {
                 model.posts.collectLatest { adapter.submitData(it) }
             }
-            binding.swipe.setOnRefreshListener { adapter.refresh() }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 adapter.loadStateFlow.collectLatest {
                     binding.swipe.isRefreshing = it.refresh is LoadState.Loading
                     sum.postValue(adapter.itemCount)
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 val flow1 = model.index.asFlow().distinctUntilChanged()
                 val flow2 = model.min.asFlow().distinctUntilChanged()
                 val flow3 = model.max.asFlow().distinctUntilChanged()
@@ -339,33 +367,33 @@ class ImageFragment : Fragment() {
                     binding.layout1.isInvisible = max == 0 || MoeSettings.page.value!!
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 sum.asFlow().distinctUntilChanged().collectLatest {
                     binding.progress.max = it
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 offset.asFlow().distinctUntilChanged().collectLatest {
                     binding.progress.setProgressCompat(it)
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 MoeSettings.column.asFlow().drop(1).distinctUntilChanged().collectLatest {
                     TransitionManager.beginDelayedTransition(binding.swipe)
                     (binding.recycler.layoutManager as? StaggeredGridLayoutManager)?.spanCount = it
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 MoeSettings.info.asFlow().drop(1).distinctUntilChanged().collectLatest {
                     adapter.notifyItemRangeChanged(0, adapter.itemCount, "info")
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 MoeSettings.preview.asFlow().drop(1).distinctUntilChanged().collectLatest {
                     adapter.notifyItemRangeChanged(0, adapter.itemCount, "preview")
                 }
             }
-            lifecycleScope.launchWhenCreated {
+            launchWhenCreated {
                 MoeSettings.page.asFlow().drop(1).distinctUntilChanged().collectLatest {
                     val max = model.max.value ?: 0
                     binding.layout1.isInvisible = max == 0 || it
@@ -376,7 +404,7 @@ class ImageFragment : Fragment() {
             binding.recycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
                 override fun onScrolled(view: RecyclerView, dx: Int, dy: Int) {
                     (view.layoutManager as? StaggeredGridLayoutManager)?.findFirstCompletelyVisibleItemPositions(null)?.minOrNull()?.let {
-                        model.index.postValue(it / ImageViewModel.pageSize)
+                        model.index.postValue(it / ImageViewModel.PAGE_SIZE)
                     }
                     (view.layoutManager as? StaggeredGridLayoutManager)?.findLastCompletelyVisibleItemPositions(null)?.maxOrNull()?.let {
                         offset.postValue(it)
@@ -393,11 +421,10 @@ class ImageFragment : Fragment() {
                                 model.min.value = it
                                 adapter.refresh()
                             } else {
-                                binding.recycler.scrollToPosition((it - model.min.value!!) * ImageViewModel.pageSize)
+                                binding.recycler.scrollToPosition((it - model.min.value!!) * ImageViewModel.PAGE_SIZE)
                             }
                         }
-                    }
-                    .create().show()
+                    }.create().show()
             }
         }.root
 
@@ -405,7 +432,7 @@ class ImageFragment : Fragment() {
         init {
             binding.text1.backgroundTintList = ColorStateList.valueOf(randomColor(0x80))
             binding.root.setOnClickListener {
-                val query = binding.root.findFragment<Fragment>().arguments?.getParcelable<Q>("query") ?: return@setOnClickListener
+                val query = binding.root.findFragment<Fragment>().arguments?.getParcelableCompat<Q>("query") ?: return@setOnClickListener
                 val options = ActivityOptions.makeSceneTransitionAnimation(activity, binding.root, "shared_element_container")
                 requireActivity().startActivity(
                     Intent(context, PreviewActivity::class.java).putExtra("query", query).putExtra("index", bindingAdapterPosition),
@@ -421,10 +448,7 @@ class ImageFragment : Fragment() {
                     }
                     this.adapter = adapter
                 }
-                lifecycleScope.launchWhenCreated {
-                    adapter.submit(item)
-                }
-
+                launchWhenCreated { adapter.submit(item) }
                 MaterialAlertDialogBuilder(context)
                     .setView(recycler)
                     .setPositiveButton(R.string.app_save, null)
@@ -468,9 +492,9 @@ class ImageFragment : Fragment() {
                 val sample = MoeSettings.preview.value == true
                 val url = if (sample) item.sample_url else item.preview_url
                 progress.postValue(url)
-                GlideApp.with(binding.image1).load(url).placeholder(R.mipmap.ic_launcher_foreground)
+                Glide.with(binding.image1).load(url).placeholder(R.mipmap.ic_launcher_foreground)
                     .run {
-                        val target = if (sample) GlideApp.with(binding.image1).load(item.preview_url) else this
+                        val target = if (sample) Glide.with(binding.image1).load(item.preview_url) else this
                         target.transition(DrawableTransitionOptions.withCrossFade())
                             .onResourceReady { _, _, _, _, _ -> binding.image1.setImageDrawable(null); false }
                         if (sample) thumbnail(target) else this
@@ -513,10 +537,12 @@ class ImageFragment : Fragment() {
                     binding.errorMsg.isVisible = true
                     binding.errorMsg.text = loadState.error.message
                 }
+
                 is LoadState.NotLoading -> {
                     binding.errorMsg.isVisible = loadState.endOfPaginationReached
                     binding.errorMsg.text = if (loadState.endOfPaginationReached) "END" else null
                 }
+
                 else -> {
                     binding.errorMsg.isVisible = false
                     binding.errorMsg.text = null

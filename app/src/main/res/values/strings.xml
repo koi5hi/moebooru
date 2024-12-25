@@ -4,8 +4,8 @@
     <string name="app_cancel">Cancel</string>
     <string name="app_column">Column</string>
     <string name="app_complete">Complete</string>
-    <string name="app_download">%1$s download</string>
-    <string name="app_download_apk">download</string>
+    <string name="app_downloaded">%1$s download</string>
+    <string name="app_download">download</string>
     <string name="app_failed">Failed</string>
     <string name="app_favorite">Favorite</string>
     <string name="app_github">GitHub</string>
@@ -14,7 +14,7 @@
     <string name="app_artist">Artist</string>
     <string name="app_page_jump">Page number</string>
     <string name="app_page_number">%1$d/%2$d</string>
-    <string name="app_pre_release">pre-release</string>
+    <string name="app_pre_release">releases</string>
     <string name="app_process_text_error">find text menu error: %1$s.</string>
     <string name="app_resolution">%1$dx%2$d[%3$s]</string>
     <string name="app_retry">retry</string>
@@ -24,16 +24,24 @@
     <string name="app_share">Share</string>
     <string name="app_similar">Similar images</string>
     <string name="app_update">Check Update</string>
+    <string name="app_update_error">Check update error.</string>
+    <string name="app_update_ignore">Ignore version</string>
     <string name="app_version">%1$s v%2$s.%3$s</string>
+    <string name="app_channel_download">Download Notification</string>
+    <string name="app_channel_description">Please open the application notification settings, otherwise you won\'t see the download task notifications.</string>
+    <string name="app_channel_dismiss">Dismiss</string>
+    <string name="app_channel_continue">Continue</string>
 
-    <string name="download_exists">The file already exists, do you want download again?</string>
+    <string name="download_exists">You have already downloaded it. Do you need to download it again?</string>
     <string name="download_ready">Ready</string>
-    <string name="download_running">The file already downloading, wait please.</string>
+    <string name="download_started">Downloading has started. Please wait.</string>
+    <string name="download_running">It\'s already in the download queue. Please wait.</string>
 
     <string name="popular_by_day">Popular by day</string>
     <string name="popular_by_month">Popular by month</string>
     <string name="popular_by_week">Popular by week</string>
     <string name="popular_by_year">Popular by year</string>
+    <string name="popular_by_all">Popular of all</string>
     <string name="popular_by_day_for">Popular %1$s by day</string>
     <string name="popular_by_month_for">Popular %1$s by month</string>
     <string name="popular_by_week_for">Popular %1$s by week</string>
@@ -89,6 +97,7 @@
     <string name="query_value_gt">Greater than</string>
     <string name="query_value_le">Less than or equal</string>
     <string name="query_value_lt">Less than</string>
+    <string name="query_date_countdown">Use countdown time</string>
     <string name="query_vote">Vote</string>
     <string name="query_vote_desc">Query posts favored by the user ….</string>
     <string name="query_vote_star_1">★</string>
@@ -143,8 +152,8 @@
     <string name="settings_list_page_off">Enable</string>
     <string name="settings_list_page_on">Disable</string>
     <string name="settings_list_quality">Auto choose high quality image in image list</string>
-    <string name="settings_list_quality_off">Sample (small &amp; fast)</string>
-    <string name="settings_list_quality_on">High quality (clear &amp; slow)</string>
+    <string name="settings_list_quality_off">Sample (fast)</string>
+    <string name="settings_list_quality_on">High quality (slow)</string>
     <string name="settings_preview_color">Dynamic preview background color</string>
     <string name="settings_preview_color_off">Default</string>
     <string name="settings_preview_color_on">With image tint</string>
@@ -152,6 +161,7 @@
     <string name="settings_safe_turn_off">Safe</string>
     <string name="settings_safe_turn_on">All</string>
 
+    <string name="user_avatar">Avatar</string>
     <string name="user_change_email">Change Email</string>
     <string name="user_change_pwd">Change Password</string>
     <string name="user_email">Email</string>
